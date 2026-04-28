@@ -242,7 +242,7 @@ Configuration is stored at `~/.openlap/config.json`.
 
 **Known macOS / Linux limitations**
 
-- AIM `.xrk` / `.xrz` / `.drk` conversion uses **libxrk** (installed automatically via `pip install -e .`). The Windows-only AIM DLL is not needed.
+- AIM `.xrk` / `.xrz` / `.drk` conversion uses **libxrk** (installed automatically via `pip install -e .`). The AIM MatLabXRK DLL is a Windows binary and will not run on macOS or Linux — libxrk is the only supported reader on these platforms.
 - Hardware-accelerated encoding uses **VideoToolbox** (`h264_videotoolbox`) on macOS. NVENC / AMF / QSV are Windows/Linux only.
 
 ---
