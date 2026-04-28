@@ -240,10 +240,10 @@ python main.py
 
 Configuration is stored at `~/.openlap/config.json`.
 
-**Known macOS limitations**
+**Known macOS / Linux limitations**
 
-- AIM `.xrk` / `.xrz` / `.drk` conversion is unavailable — AIM only ships the required `MatLabXRK` library as a Windows DLL. RaceBox CSV, MoTeC `.ld`, and GPX files work normally.
-- Hardware-accelerated encoding uses **VideoToolbox** (`h264_videotoolbox`). NVENC / AMF / QSV are Windows/Linux only.
+- AIM `.xrk` / `.xrz` / `.drk` conversion uses **libxrk** (installed automatically via `pip install -e .`). The Windows-only AIM DLL is not needed.
+- Hardware-accelerated encoding uses **VideoToolbox** (`h264_videotoolbox`) on macOS. NVENC / AMF / QSV are Windows/Linux only.
 
 ---
 
