@@ -10,26 +10,23 @@ Point it at your telemetry files and a folder of race videos, and it matches ses
 
 ## Quick Start (Windows — no technical knowledge needed)
 
-No Python, no FFmpeg, no installation required. Everything is bundled.
+No Python, no FFmpeg, no installation hassle. Everything is bundled.
 
 **1. Download**
 
-Go to **[Releases](https://github.com/LaurensVR3/OpenLap/releases/latest)** and download the `.zip` file.
+Go to **[Releases](https://github.com/LaurensVR3/OpenLap/releases/latest)** and download `OpenLap-Setup-<version>.exe`.
 
-**2. Unzip**
+**2. Run the installer**
 
-Extract the zip anywhere — your Desktop, `C:\Tools\OpenLap`, wherever you like. You will get a folder containing `OpenLap.exe` and a folder called `_internal`.
-
-> **Important:** keep `OpenLap.exe` and the `_internal` folder together in the same location at all times. Moving just the `.exe` will break the app.
-
-**3. Run**
-
-Double-click `OpenLap.exe`.
+Double-click it and follow the wizard. No admin rights required — it installs for your user account only.
 
 > **Windows SmartScreen warning?** Windows shows this for all software that isn't commercially signed. OpenLap is open source and safe. Click **More info**, then **Run anyway**.
 
-> **Run-time error?**
-Right-click C:\OpenLab_internal\pythonnet\runtime\Python.Runtime.dll and select Properties. On the General tab there is a Security section at the bottom. Mark Unblock.
+**3. Launch**
+
+OpenLap starts automatically at the end of the wizard, and you'll find it afterwards in the Start Menu (and on your Desktop if you checked that option).
+
+> Prefer a portable, no-install copy instead? A `.zip` is also attached to each release. If you use that, extract it fully before running `OpenLap.exe` — don't run it from inside the zip — and if Windows shows a `pythonnet`/`Python.Runtime.dll` error on first launch, right-click the extracted folder → **Properties** → check **Unblock**, or run `Get-ChildItem -Recurse | Unblock-File` on it in PowerShell. This is a Windows security tag applied to downloaded/extracted files, not a bug in your files — the installer avoids it entirely, which is why it's the recommended option.
 
 **4. Set up your folders (Settings tab)**
 
@@ -267,6 +264,14 @@ pyinstaller OpenLap.spec --clean -y
 ```
 
 The executable and all dependencies are output to `dist/OpenLap/`.
+
+To also build the installer (requires [Inno Setup](https://jrsoftware.org/isinfo.php)):
+
+```bash
+iscc /DMyAppVersion=0.2.0 installer\OpenLap.iss
+```
+
+The installer is output to `installer/Output/OpenLap-Setup-0.2.0.exe`.
 
 ---
 

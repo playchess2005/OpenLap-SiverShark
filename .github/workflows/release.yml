@@ -45,8 +45,20 @@ jobs:
         run: Compress-Archive -Path dist\OpenLap\* -DestinationPath OpenLap-${{ github.ref_name }}-windows.zip
         shell: pwsh
 
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+        shell: pwsh
+
+      - name: Build installer
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$version installer\OpenLap.iss
+        shell: pwsh
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: OpenLap-${{ github.ref_name }}-windows.zip
+          files: |
+            OpenLap-${{ github.ref_name }}-windows.zip
+            installer\Output\OpenLap-Setup-*.exe
           generate_release_notes: true
