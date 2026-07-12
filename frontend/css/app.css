@@ -275,6 +275,9 @@ body {
 
 /* Date group header */
 .dl-day-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 8px 10px 3px;
   font-size: 9px;
   font-weight: 700;
@@ -282,7 +285,50 @@ body {
   text-transform: uppercase;
   color: var(--text3);
   background: transparent;
+  position: relative;
 }
+
+.dl-link-cam-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  opacity: 0.45;
+  font-size: 11px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 3px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.dl-link-cam-btn:hover  { opacity: 0.85; background: rgba(255,255,255,0.06); }
+.dl-link-cam-btn.linked { opacity: 0.9; color: #64b5f6; }
+
+.dl-link-menu {
+  position: absolute;
+  right: 6px;
+  top: 100%;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--sidebar);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 4px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  overflow: hidden;
+}
+.dl-link-menu-item {
+  border: none;
+  background: none;
+  color: var(--text1);
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: normal;
+  padding: 6px 12px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dl-link-menu-item:hover { background: rgba(255,255,255,0.06); }
 
 /* Session rows */
 .dl-row {

@@ -7,6 +7,7 @@ Push-events (export progress, scan updates) are sent via window.evaluate_js().
 """
 from __future__ import annotations
 
+import concurrent.futures
 import http.server
 import logging
 import mimetypes
@@ -27,6 +28,8 @@ _ALLOWED_VIDEO_EXTENSIONS = frozenset({
     '.mp4', '.mov', '.avi', '.mkv', '.m4v',
     '.MP4', '.MOV', '.AVI', '.MKV', '.M4V',
 })
+
+AUTO_SYNC_WORKERS = 2   # concurrent ffmpeg decodes — kept modest, CPU-heavy work
 
 
 class _VideoFileHandler(http.server.BaseHTTPRequestHandler):
@@ -120,10 +123,27 @@ class WebviewAPI:
         self._auto_sync_cancel = threading.Event()
         self._auto_sync_thread: Optional[threading.Thread] = None
         self._thread_lock      = threading.Lock()
+        self._file_meta_cache: Optional[dict] = None
+        self._meta_cache_lock  = threading.Lock()
+        self._config_lock      = threading.Lock()
 
     # ── Called by main.py once the window is ready ────────────────────────────
     def set_window(self, window: webview.Window) -> None:
         self._window = window
+
+    # ── Per-file metadata cache (video ffprobe, CSV sniff, session meta) ──────
+    def _get_file_meta_cache(self) -> dict:
+        with self._meta_cache_lock:
+            if self._file_meta_cache is None:
+                from app_config import load_file_meta_cache
+                self._file_meta_cache = load_file_meta_cache()
+            return self._file_meta_cache
+
+    def _save_file_meta_cache(self) -> None:
+        with self._meta_cache_lock:
+            if self._file_meta_cache is not None:
+                from app_config import save_file_meta_cache
+                save_file_meta_cache(self._file_meta_cache)
 
     def _push(self, event_type: str, **payload) -> None:
         """Push a CustomEvent to JavaScript."""
@@ -212,31 +232,78 @@ class WebviewAPI:
         """
         if folder == '__cache__':
             return self._cached_sessions()
+        return self.scan_all_sessions([folder])
 
+    def scan_all_sessions(self, telemetry_paths: list) -> list:
+        """
+        Scan all given telemetry folders and match them against a single video
+        folder scan. The video folder is only ever scanned once per call — it
+        used to be rescanned once per telemetry path, which meant every video
+        got ffprobed N times for N configured telemetry folders.
+        Returns a list of session dicts consumable by the JS Data page.
+        """
         from session_scanner import (
             scan_csvs, scan_videos, group_videos, match_sessions,
             scan_pending_xrk, convert_xrk_files, MatchedSession,
         )
 
-        folder = str(Path(folder).resolve())
-        video_folder = self._config.video_path or folder
+        folders = [str(Path(p).resolve()) for p in telemetry_paths if p]
+        video_folder = self._config.video_path or (folders[0] if folders else '')
 
-        # Auto-convert any XRK files that don't yet have a CSV.
+        # Auto-convert any XRK files that don't yet have a CSV, across all paths.
         # Progress messages are pushed to JS so the status bar stays informative.
-        pending_xrk = scan_pending_xrk(folder)
-        if pending_xrk:
-            def _xrk_progress(msg: str) -> None:
-                self._push('scan_status', message=msg)
-            convert_xrk_files(folder, progress_cb=_xrk_progress)
+        for folder in folders:
+            pending_xrk = scan_pending_xrk(folder)
+            if pending_xrk:
+                def _xrk_progress(msg: str) -> None:
+                    self._push('scan_status', message=msg)
+                convert_xrk_files(folder, progress_cb=_xrk_progress)
 
-        # Scan telemetry files (includes any CSVs just produced above)
-        csv_paths = scan_csvs(folder)
+        file_cache = self._get_file_meta_cache()
 
-        # Scan video files
+        # Scan telemetry files across all configured paths (includes any CSVs
+        # just produced above), deduplicating paths reachable from more than
+        # one configured folder.
+        csv_paths: list = []
+        seen_csv = set()
+        for folder in folders:
+            for p in scan_csvs(folder, cache=file_cache['csvs']):
+                if p not in seen_csv:
+                    seen_csv.add(p)
+                    csv_paths.append(p)
+
+        # Scan the video folder exactly once, regardless of how many telemetry
+        # folders were passed in.
         try:
-            videos = scan_videos(video_folder)
+            videos = scan_videos(video_folder, cache=file_cache['videos']) if video_folder else []
         except Exception:
             videos = []
+
+        # Fold in any manually-linked camera folders (action cams with a wrong
+        # clock — see link_camera_folder()). Same cached scan_videos(), just with
+        # each entry's stored constant offset applied to creation_time so the
+        # normal grouping/matching below treats them like any other video.
+        from datetime import timedelta
+        seen_video_paths = {v.path for v in videos}
+        for entry in self._config.linked_camera_folders:
+            lf_folder = entry.get('folder', '')
+            offset    = entry.get('offset_seconds', 0.0)
+            if not lf_folder:
+                continue
+            try:
+                lf_videos = scan_videos(lf_folder, cache=file_cache['videos'])
+            except Exception:
+                continue
+            for v in lf_videos:
+                if v.path in seen_video_paths:
+                    continue
+                seen_video_paths.add(v.path)
+                if v.creation_time:
+                    v.creation_time = v.creation_time + timedelta(seconds=offset)
+                videos.append(v)
+        videos.sort(key=lambda v: v.sort_key)
+
+        self._save_file_meta_cache()
 
         groups = group_videos(videos)
         matches = match_sessions(csv_paths, groups)
@@ -244,19 +311,21 @@ class WebviewAPI:
         # Any XRK that still has no CSV (DLL missing / conversion failed) →
         # show as a pending session so the user can retry manually.
         existing_csv_paths = {m.csv_path for m in matches}
-        for xrk_path, csv_path in scan_pending_xrk(folder):
-            if csv_path not in existing_csv_paths:
-                matches.append(MatchedSession(
-                    csv_path        = csv_path,
-                    video_group     = None,
-                    time_delta      = float('inf'),
-                    csv_start       = None,
-                    video_start     = None,
-                    matched         = False,
-                    source          = 'AIM Mychron',
-                    needs_conversion= True,
-                    xrk_path        = xrk_path,
-                ))
+        for folder in folders:
+            for xrk_path, csv_path in scan_pending_xrk(folder):
+                if csv_path not in existing_csv_paths:
+                    existing_csv_paths.add(csv_path)
+                    matches.append(MatchedSession(
+                        csv_path        = csv_path,
+                        video_group     = None,
+                        time_delta      = float('inf'),
+                        csv_start       = None,
+                        video_start     = None,
+                        matched         = False,
+                        source          = 'AIM Mychron',
+                        needs_conversion= True,
+                        xrk_path        = xrk_path,
+                    ))
 
         # Load cached offsets
         offsets        = self._config.offsets
@@ -282,8 +351,70 @@ class WebviewAPI:
                 'best':            None,
             })
 
-        logger.info('scan_sessions: %s → %d sessions', folder, len(result))
+        logger.info('scan_all_sessions: %s → %d sessions', folders, len(result))
         return result
+
+    def link_camera_folder(self, day: str, folder: str, day_sessions: list) -> dict:
+        """Manually link a folder of action-cam clips to a day of telemetry sessions.
+
+        Solves for the constant clock offset (session_scanner.solve_camera_offset)
+        that best aligns the folder's video timestamps with that day's session
+        start times, and persists it so every future scan applies the same
+        correction — for cameras whose date/time was never set correctly.
+
+        day_sessions: [{csv_path, csv_start}, ...] for the day being linked, as
+        already held by the JS Data page (avoids re-deriving "sessions on day X"
+        on the backend).
+        Returns {offset_seconds, matched_count, total_groups, total_sessions}.
+        """
+        from session_scanner import scan_videos, group_videos, solve_camera_offset
+        from datetime import datetime as _dt
+
+        folder = str(Path(folder).resolve())
+        file_cache = self._get_file_meta_cache()
+        try:
+            videos = scan_videos(folder, cache=file_cache['videos'])
+        except Exception:
+            videos = []
+        self._save_file_meta_cache()
+
+        groups = group_videos(videos)
+
+        session_times = []
+        for s in day_sessions:
+            raw = s.get('csv_start')
+            if not raw:
+                continue
+            try:
+                session_times.append(_dt.fromisoformat(raw.replace('Z', '+00:00')))
+            except Exception:
+                continue
+
+        offset, matched_count = solve_camera_offset(groups, session_times)
+
+        entries = [e for e in self._config.linked_camera_folders
+                   if not (e.get('day') == day and e.get('folder') == folder)]
+        entries.append({'day': day, 'folder': folder, 'offset_seconds': offset, 'source': 'auto'})
+        self._config.linked_camera_folders = entries
+        self._config.save()
+
+        logger.info('link_camera_folder: %s + %s → offset=%.1fs matched=%d/%d',
+                   day, folder, offset, matched_count, len(groups))
+        return {
+            'offset_seconds': offset,
+            'matched_count':  matched_count,
+            'total_groups':   len(groups),
+            'total_sessions': len(session_times),
+        }
+
+    def unlink_camera_folder(self, day: str, folder: str) -> None:
+        """Remove a previously linked camera folder for a day."""
+        folder = str(Path(folder).resolve())
+        self._config.linked_camera_folders = [
+            e for e in self._config.linked_camera_folders
+            if not (e.get('day') == day and e.get('folder') == folder)
+        ]
+        self._config.save()
 
     def save_sessions_cache(self, sessions: list) -> None:
         """Persist the full merged session list (from all paths) for fast startup.
@@ -340,20 +471,39 @@ class WebviewAPI:
             import os
             suffix = os.path.splitext(csv_path)[1].lower()
 
-            # GPX / MoTeC / VBOX: need a full load but they're usually small
+            # GPX / MoTeC / VBOX: need a full load but they're usually small.
+            # Cache the derived result by (size, mtime) so repeat scans of an
+            # unchanged file don't re-parse it every time.
             if suffix in ('.gpx', '.ld', '.vbo'):
+                stat = None
+                try:
+                    st = os.stat(csv_path)
+                    stat = (st.st_size, st.st_mtime)
+                except OSError:
+                    pass
+
+                meta_cache = self._get_file_meta_cache()['meta']
+                entry = meta_cache.get(csv_path)
+                if stat and entry and entry.get('size') == stat[0] and entry.get('mtime') == stat[1]:
+                    return entry['data']
+
                 session = self._load_session(csv_path)
                 if not session:
-                    return {'track': '', 'laps': '', 'best': '', 'best_secs': None}
-                laps = getattr(session, 'laps', [])
-                durs = [l.duration for l in laps if l.duration]
-                best = min(durs) if durs else None
-                return {
-                    'track':     getattr(session, 'track', '') or '',
-                    'laps':      str(len(laps)),
-                    'best':      f'{best:.3f}s' if best else '',
-                    'best_secs': best,
-                }
+                    result = {'track': '', 'laps': '', 'best': '', 'best_secs': None}
+                else:
+                    laps = getattr(session, 'laps', [])
+                    durs = [l.duration for l in laps if l.duration]
+                    best = min(durs) if durs else None
+                    result = {
+                        'track':     getattr(session, 'track', '') or '',
+                        'laps':      str(len(laps)),
+                        'best':      f'{best:.3f}s' if best else '',
+                        'best_secs': best,
+                    }
+                if stat:
+                    meta_cache[csv_path] = {'size': stat[0], 'mtime': stat[1], 'data': result}
+                    self._save_file_meta_cache()
+                return result
 
             # AIM CSV: no metadata header; use filename
             if suffix == '.csv':
@@ -751,16 +901,23 @@ class WebviewAPI:
         from auto_sync import run_auto_sync
 
         total = len(sessions)
-        for i, s in enumerate(sessions):
+        progress_lock = threading.Lock()
+        started = 0
+
+        def _process(s: dict) -> None:
+            nonlocal started
             if self._auto_sync_cancel.is_set():
-                break
+                return
             if self._export_thread and self._export_thread.is_alive():
-                break
+                return
 
             csv_path = s['csv_path']
+            with progress_lock:
+                started += 1
+                idx = started
             self._push('auto_sync_progress',
                        status='processing', csv_path=csv_path,
-                       current=i + 1, total=total)
+                       current=idx, total=total)
 
             def _progress(vid_t, offset, conf, _csv=csv_path):
                 self._push('auto_sync_progress',
@@ -776,24 +933,30 @@ class WebviewAPI:
             )
 
             if self._auto_sync_cancel.is_set():
-                break
+                return
 
-            if offset is not None:
-                # Don't overwrite a user-confirmed offset that was set while we were processing
-                if self._config.offset_sources.get(csv_path) != 'user':
-                    self._config.offsets[csv_path]        = offset
-                    self._config.offset_sources[csv_path] = 'auto'
+            # Config saves are serialized — two workers finishing at the same
+            # moment must not interleave writes to the same JSON file.
+            with self._config_lock:
+                if offset is not None:
+                    # Don't overwrite a user-confirmed offset set while we were processing
+                    if self._config.offset_sources.get(csv_path) != 'user':
+                        self._config.offsets[csv_path]        = offset
+                        self._config.offset_sources[csv_path] = 'auto'
+                        self._config.save()
+                        self._push('auto_sync_progress',
+                                   status='done', csv_path=csv_path,
+                                   offset=offset, confidence=confidence)
+                else:
+                    if csv_path not in self._config.auto_sync_failed:
+                        self._config.auto_sync_failed.append(csv_path)
                     self._config.save()
                     self._push('auto_sync_progress',
-                               status='done', csv_path=csv_path,
-                               offset=offset, confidence=confidence)
-            else:
-                if csv_path not in self._config.auto_sync_failed:
-                    self._config.auto_sync_failed.append(csv_path)
-                self._config.save()
-                self._push('auto_sync_progress',
-                           status='failed', csv_path=csv_path,
-                           confidence=confidence)
+                               status='failed', csv_path=csv_path,
+                               confidence=confidence)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=AUTO_SYNC_WORKERS) as ex:
+            list(ex.map(_process, sessions))
 
         self._push('auto_sync_done')
 

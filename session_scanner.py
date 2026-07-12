@@ -18,17 +18,21 @@ Matching strategy:
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
+import threading
 
 logger = logging.getLogger(__name__)
 
 from utils import _run
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, List, Optional, Dict, Tuple  # noqa: F401 – Tuple used in scan_pending_xrk
+
+SCAN_WORKERS = 8   # thread pool size for concurrent ffprobe / file-sniff I/O
 
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.MP4', '.MOV', '.AVI', '.MKV'}
 CSV_EXTENSIONS   = {'.csv', '.CSV'}
@@ -37,6 +41,11 @@ LD_EXTENSIONS    = {'.ld',  '.LD'}
 VBO_EXTENSIONS   = {'.vbo', '.VBO'}
 MAX_GAP          = 120.0    # seconds between consecutive segments of one recording
 MATCH_WINDOW     = 3600.0   # max seconds between CSV start and video group start
+CAMERA_OFFSET_WINDOW = 300.0
+# Tolerance used only when *solving* a constant camera-clock offset (not for
+# regular matching). Must be much tighter than MATCH_WINDOW: multi-session
+# track days are often on an hourly-ish timetable, so a wide window lets a
+# wrong offset alias onto a neighbouring session and look like a valid fit.
 
 # Sentinel stored on MatchedSession.csv_path entries to identify source type
 CSV_SOURCE_RACEBOX = 'racebox'
@@ -82,8 +91,23 @@ def _ffprobe_creation_time(path: str) -> Optional[datetime]:
         return None, 0.0
 
 
-def scan_videos(folder: str, progress_cb: Optional[Callable[[str], None]] = None) -> List[VideoFile]:
-    """Recursively scan a folder for video files."""
+def _stat_size_mtime(path: str) -> Optional[Tuple[int, float]]:
+    try:
+        st = os.stat(path)
+        return st.st_size, st.st_mtime
+    except OSError:
+        return None
+
+
+def scan_videos(folder: str, progress_cb: Optional[Callable[[str], None]] = None,
+                cache: Optional[Dict[str, dict]] = None) -> List[VideoFile]:
+    """Recursively scan a folder for video files.
+
+    *cache* is the 'videos' namespace of the file-meta cache (path -> {size, mtime,
+    creation_time, duration}), mutated in place. Files whose (size, mtime) still
+    match a cache entry reuse it instead of re-probing with ffprobe; cache misses
+    (new/changed files) are probed concurrently.
+    """
     all_paths = [
         os.path.join(root, fname)
         for root, _, files in os.walk(folder)
@@ -91,19 +115,52 @@ def scan_videos(folder: str, progress_cb: Optional[Callable[[str], None]] = None
         if Path(fname).suffix in VIDEO_EXTENSIONS
     ]
     total = len(all_paths)
+    if cache is None:
+        cache = {}
 
-    results = []
-    for i, path in enumerate(all_paths, 1):
-        if progress_cb:
-            progress_cb(f"Reading video metadata… ({i}/{total})  {os.path.basename(path)}")
+    results: List[Optional[VideoFile]] = [None] * total
+    to_probe: List[Tuple[int, str]] = []
+
+    for i, path in enumerate(all_paths):
+        stat  = _stat_size_mtime(path)
+        entry = cache.get(path)
+        if stat and entry and entry.get('size') == stat[0] and entry.get('mtime') == stat[1]:
+            ct_raw = entry.get('creation_time')
+            ct = datetime.fromisoformat(ct_raw) if ct_raw else None
+            results[i] = VideoFile(path=path, creation_time=ct, duration=entry.get('duration', 0.0))
+        else:
+            to_probe.append((i, path))
+
+    progress_lock = threading.Lock()
+    done_count = total - len(to_probe)
+
+    def _probe(item: Tuple[int, str]) -> None:
+        nonlocal done_count
+        i, path = item
         ct, dur = _ffprobe_creation_time(path)
         if ct is None:
             mtime = os.path.getmtime(path)
             ct    = datetime.fromtimestamp(mtime, tz=timezone.utc)
-            from datetime import timedelta
             if dur > 0:
                 ct = ct - timedelta(seconds=dur)
-        results.append(VideoFile(path=path, creation_time=ct, duration=dur))
+        results[i] = VideoFile(path=path, creation_time=ct, duration=dur)
+        stat = _stat_size_mtime(path)
+        if stat:
+            cache[path] = {
+                'size': stat[0], 'mtime': stat[1],
+                'creation_time': ct.isoformat() if ct else None,
+                'duration': dur,
+            }
+        if progress_cb:
+            with progress_lock:
+                done_count += 1
+                n = done_count
+            progress_cb(f"Reading video metadata… ({n}/{total})  {os.path.basename(path)}")
+
+    if to_probe:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=SCAN_WORKERS) as ex:
+            list(ex.map(_probe, to_probe))
+
     results.sort(key=lambda v: v.sort_key)
     return results
 
@@ -149,6 +206,61 @@ def _make_group(files: List[VideoFile]) -> VideoGroup:
     total = sum(v.duration for v in files)
     end   = start + timedelta(seconds=total) if start else start
     return VideoGroup(files=files, start_time=start, end_time=end, total_dur=total)
+
+
+def solve_camera_offset(video_groups: List[VideoGroup],
+                        session_times: List[datetime],
+                        window_s: float = CAMERA_OFFSET_WINDOW) -> Tuple[float, int]:
+    """Find the constant offset (seconds) to add to every video group's start_time
+    that best aligns it with one of *session_times*.
+
+    Handles a camera whose clock is simply wrong (wrong time, or even wrong date) —
+    the offset between "what the camera thinks" and "what actually happened" is the
+    same for every clip from that camera, since only the absolute clock is off, not
+    the relative timing between clips. Candidate offsets are every pairwise delta
+    between a group and a session time, so the true offset is always among them if
+    at least one (group, session) pair is a genuine match. For each candidate, count
+    how many groups land within *window_s* of a distinct session (greedy nearest,
+    one-to-one) and keep the candidate with the most matches, using total residual
+    to break ties. Pure arithmetic over already-known timestamps — no file I/O.
+
+    Returns (best_offset, match_count). (0.0, 0) if either input is empty.
+    """
+    groups = [g for g in video_groups if g.start_time]
+    if not groups or not session_times:
+        return 0.0, 0
+
+    group_ts   = [g.start_time.timestamp() for g in groups]
+    session_ts = [t.timestamp() for t in session_times]
+
+    candidates = {st - gt for gt in group_ts for st in session_ts}
+
+    best_offset   = 0.0
+    best_count    = -1
+    best_residual = float('inf')
+
+    for cand in candidates:
+        used = set()
+        count = 0
+        residual = 0.0
+        for gt in group_ts:
+            shifted = gt + cand
+            best_i, best_dt = None, None
+            for i, st in enumerate(session_ts):
+                if i in used:
+                    continue
+                dt = abs(st - shifted)
+                if dt <= window_s and (best_dt is None or dt < best_dt):
+                    best_i, best_dt = i, dt
+            if best_i is not None:
+                used.add(best_i)
+                count += 1
+                residual += best_dt
+
+        if count > best_count or (count == best_count and residual < best_residual):
+            best_offset, best_count, best_residual = cand, count, residual
+
+    return best_offset, best_count
 
 
 # ── XRK conversion ─────────────────────────────────────────────────────────────
@@ -257,54 +369,84 @@ def convert_xrk_files(folder: str, progress_cb: Optional[Callable[[str], None]] 
 
 # ── CSV scanning ───────────────────────────────────────────────────────────────
 
-def scan_csvs(folder: str) -> List[str]:
-    """Recursively find all RaceBox, AIM Mychron CSV, GPX, MoTeC .ld, and VBOX .vbo files."""
+def _sniff_candidate(path: str, suffix: str) -> bool:
+    """Read/parse a candidate file to decide whether it's a real telemetry file."""
     import motec_data as _motec
-    results = []
-    for root, _, files in os.walk(folder):
-        for fname in sorted(files):
-            suffix = Path(fname).suffix
-            path = os.path.join(root, fname)
 
-            if suffix in VBO_EXTENSIONS:
-                try:
-                    with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
-                        head = f.read(256)
-                    if '[header]' in head.lower():
-                        results.append(path)
-                except Exception:
-                    logger.debug('Could not read VBO candidate %s', path, exc_info=True)
-                continue
+    if suffix in VBO_EXTENSIONS:
+        try:
+            with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
+                head = f.read(256)
+            return '[header]' in head.lower()
+        except Exception:
+            logger.debug('Could not read VBO candidate %s', path, exc_info=True)
+            return False
 
-            if suffix in GPX_EXTENSIONS:
-                # GPX files are identified by extension + quick content check
-                try:
-                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                        chunk = f.read(256)
-                    if '<gpx' in chunk.lower():
-                        results.append(path)
-                except Exception:
-                    logger.debug('Could not read GPX candidate %s', path, exc_info=True)
-                continue
+    if suffix in GPX_EXTENSIONS:
+        try:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                chunk = f.read(256)
+            return '<gpx' in chunk.lower()
+        except Exception:
+            logger.debug('Could not read GPX candidate %s', path, exc_info=True)
+            return False
 
-            if suffix in LD_EXTENSIONS:
-                if _motec.is_motec_ld(path):
-                    results.append(path)
-                continue
+    if suffix in LD_EXTENSIONS:
+        return _motec.is_motec_ld(path)
 
-            if suffix not in CSV_EXTENSIONS:
-                continue
+    try:
+        with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
+            content = f.read(2000)
+        if 'Record,Time,' in content and 'RaceBox' in content:
+            return True
+        return content.startswith('Time (s),') or '\nTime (s),' in content
+    except Exception:
+        logger.debug('Could not read CSV candidate %s', path, exc_info=True)
+        return False
 
-            try:
-                with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
-                    content = f.read(2000)
-                if 'Record,Time,' in content and 'RaceBox' in content:
-                    results.append(path)
-                elif content.startswith('Time (s),') or '\nTime (s),' in content:
-                    results.append(path)
-            except Exception:
-                logger.debug('Could not read CSV candidate %s', path, exc_info=True)
-    return results
+
+def scan_csvs(folder: str, cache: Optional[Dict[str, dict]] = None) -> List[str]:
+    """Recursively find all RaceBox, AIM Mychron CSV, GPX, MoTeC .ld, and VBOX .vbo files.
+
+    *cache* is the 'csvs' namespace of the file-meta cache (path -> {size, mtime,
+    valid}), mutated in place. Files whose (size, mtime) still match a cache entry
+    skip the sniff read entirely; cache misses are sniffed concurrently.
+    """
+    if cache is None:
+        cache = {}
+
+    candidates: List[Tuple[str, str]] = [
+        (os.path.join(root, fname), Path(fname).suffix)
+        for root, _, files in os.walk(folder)
+        for fname in sorted(files)
+        if (Path(fname).suffix in VBO_EXTENSIONS or Path(fname).suffix in GPX_EXTENSIONS or
+            Path(fname).suffix in LD_EXTENSIONS or Path(fname).suffix in CSV_EXTENSIONS)
+    ]
+
+    valid: List[Optional[bool]] = [None] * len(candidates)
+    to_sniff: List[Tuple[int, str, str]] = []
+
+    for i, (path, suffix) in enumerate(candidates):
+        stat  = _stat_size_mtime(path)
+        entry = cache.get(path)
+        if stat and entry and entry.get('size') == stat[0] and entry.get('mtime') == stat[1]:
+            valid[i] = bool(entry.get('valid'))
+        else:
+            to_sniff.append((i, path, suffix))
+
+    def _sniff(item: Tuple[int, str, str]) -> None:
+        i, path, suffix = item
+        is_valid = _sniff_candidate(path, suffix)
+        valid[i] = is_valid
+        stat = _stat_size_mtime(path)
+        if stat:
+            cache[path] = {'size': stat[0], 'mtime': stat[1], 'valid': is_valid}
+
+    if to_sniff:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=SCAN_WORKERS) as ex:
+            list(ex.map(_sniff, to_sniff))
+
+    return [path for (path, _), ok in zip(candidates, valid) if ok]
 
 
 # ── Matching ───────────────────────────────────────────────────────────────────

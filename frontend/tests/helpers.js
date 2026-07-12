@@ -65,9 +65,11 @@ export function makeAPI(overrides = {}) {
       offsets: {},
       bike_overrides: {},
       overlay: { is_bike: false, theme: 'Dark', gauges: [] },
+      linked_camera_folders: [],
     })),
     getLaps:           vi.fn(async () => []),
     scanSessions:      vi.fn(async () => []),
+    scanAllSessions:   vi.fn(async () => []),
     saveConfig:        vi.fn(async () => null),
     startExport:       vi.fn(async () => null),
     cancelExport:      vi.fn(async () => null),
@@ -75,6 +77,8 @@ export function makeAPI(overrides = {}) {
     getSessionMeta:    vi.fn(async () => ({ track: '', laps: '', best: '', best_secs: null })),
     getVideoServerPort: vi.fn(async () => 0),
     saveSessionsCache:  vi.fn(async () => null),
+    linkCameraFolder:   vi.fn(async () => ({ offset_seconds: 0, matched_count: 0, total_groups: 0, total_sessions: 0 })),
+    unlinkCameraFolder: vi.fn(async () => null),
     ...overrides,
   };
 }

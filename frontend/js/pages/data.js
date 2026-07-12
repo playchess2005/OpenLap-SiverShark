@@ -118,13 +118,109 @@
 
     const groups = sortedGroups();
     pane.innerHTML = groups.map(g => `
-      <div class="dl-day-hdr">${esc(g.day)}</div>
+      <div class="dl-day-hdr">
+        <span>${esc(g.day)}</span>
+        ${dayLinkButton(g.day)}
+      </div>
       ${g.sessions.map(s => sessionRow(s)).join('')}
     `).join('');
 
     pane.querySelectorAll('.dl-row').forEach(row => {
       row.addEventListener('click', () => selectSession(row.dataset.csv));
     });
+    pane.querySelectorAll('.dl-link-cam-btn').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        onDayLinkClick(btn.dataset.day, btn);
+      });
+    });
+  }
+
+  // ── Camera-folder day linking (action cams with a wrong clock) ─────────────────
+
+  function linkedFolderForDay(day) {
+    return (_config?.linked_camera_folders || []).find(e => e.day === day) || null;
+  }
+
+  function fmtOffset(secs) {
+    const sign = secs < 0 ? '−' : '+';
+    let s = Math.abs(Math.round(secs));
+    const days = Math.floor(s / 86400); s -= days * 86400;
+    const hrs  = Math.floor(s / 3600);  s -= hrs * 3600;
+    const mins = Math.floor(s / 60);
+    const parts = [];
+    if (days) parts.push(`${days}d`);
+    if (days || hrs) parts.push(`${hrs}h`);
+    parts.push(`${mins}m`);
+    return `${sign}${parts.join(' ')}`;
+  }
+
+  function dayLinkButton(day) {
+    const linked = linkedFolderForDay(day);
+    const title = linked
+      ? `Linked: ${baseName(linked.folder)} (clock offset ${fmtOffset(linked.offset_seconds)}) — click to relink or unlink`
+      : 'Link a video folder to this day (for action cams with a wrong clock)';
+    return `<button class="dl-link-cam-btn${linked ? ' linked' : ''}" data-day="${esc(day)}" title="${esc(title)}">📷</button>`;
+  }
+
+  function onDayLinkClick(day, btn) {
+    const existingMenu = btn.parentElement.querySelector('.dl-link-menu');
+    if (existingMenu) { existingMenu.remove(); return; }
+
+    const linked = linkedFolderForDay(day);
+    if (!linked) {
+      promptAndLink(day);
+      return;
+    }
+
+    const menu = document.createElement('div');
+    menu.className = 'dl-link-menu';
+    menu.innerHTML = `
+      <button class="dl-link-menu-item" data-act="relink">Relink…</button>
+      <button class="dl-link-menu-item" data-act="unlink">Unlink</button>
+    `;
+    btn.parentElement.appendChild(menu);
+    menu.querySelector('[data-act="relink"]').addEventListener('click', () => {
+      menu.remove();
+      promptAndLink(day);
+    });
+    menu.querySelector('[data-act="unlink"]').addEventListener('click', async () => {
+      menu.remove();
+      await API.unlinkCameraFolder(day, linked.folder).catch(() => {});
+      _config.linked_camera_folders = (_config.linked_camera_folders || [])
+        .filter(e => !(e.day === day && e.folder === linked.folder));
+      renderLeft();
+      setStatus('Camera folder unlinked.');
+      doScan(true);
+    });
+  }
+
+  async function promptAndLink(day) {
+    const folder = await API.openFolderDialog().catch(() => null);
+    if (!folder) return;
+
+    const daySessions = _sessions
+      .filter(s => dateKey(s.csv_start) === day)
+      .map(s => ({ csv_path: s.csv_path, csv_start: s.csv_start }));
+    if (!daySessions.length) {
+      setStatus('No telemetry sessions found for that day.');
+      return;
+    }
+
+    setStatus('Linking camera folder…');
+    try {
+      const r = await API.linkCameraFolder(day, folder, daySessions);
+      if (!_config.linked_camera_folders) _config.linked_camera_folders = [];
+      _config.linked_camera_folders = _config.linked_camera_folders
+        .filter(e => !(e.day === day && e.folder === folder));
+      _config.linked_camera_folders.push({ day, folder, offset_seconds: r.offset_seconds, source: 'auto' });
+      renderLeft();
+      setStatus(`Camera folder linked — ${r.matched_count} of ${r.total_groups} clip group(s) matched `
+               + `(clock offset ${fmtOffset(r.offset_seconds)}). Re-scanning…`);
+      await doScan(true);
+    } catch (e) {
+      setStatus('Linking failed: ' + e);
+    }
   }
 
   function sessionRow(s) {
@@ -727,12 +823,7 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
     _container?.querySelector('#scan-btn')?.setAttribute('disabled', '');
 
     try {
-      const all = [];
-      for (const p of paths) {
-        const r = await API.scanSessions(p);
-        all.push(...r);
-      }
-      _sessions = all;
+      _sessions = await API.scanAllSessions(paths);
       // Apply stored offsets and sources
       for (const s of _sessions) {
         if (_config?.offsets?.[s.csv_path] != null) {

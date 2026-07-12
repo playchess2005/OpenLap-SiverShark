@@ -41,6 +41,7 @@ describe('Data page — previewSession wiring', () => {
         overlay:             { is_bike: false, theme: 'Dark', gauges: [] },
       })),
       scanSessions:      vi.fn(async () => [SESSION]),
+      scanAllSessions:   vi.fn(async () => [SESSION]),
       getLaps:           vi.fn(async () => LAPS),
       getSessionMeta:    vi.fn(async () => ({
         track: 'Spa-Francorchamps', laps: '2', best: '1:23.100', best_secs: 83.1,

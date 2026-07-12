@@ -8,6 +8,7 @@ from session_scanner import (
     group_videos, _make_group,
     _read_csv_start_time, _csv_source,
     match_sessions, MatchedSession,
+    solve_camera_offset,
     MAX_GAP, MATCH_WINDOW,
 )
 
@@ -134,3 +135,84 @@ def test_match_sessions_sorts_by_csv_start(racebox_car_csv_path, racebox_bike_cs
     results = match_sessions([racebox_bike_csv_path, racebox_car_csv_path], [])
     starts = [r.csv_start for r in results if r.csv_start]
     assert starts == sorted(starts)
+
+
+# ── solve_camera_offset ───────────────────────────────────────────────────────
+
+def test_solve_camera_offset_empty_inputs():
+    assert solve_camera_offset([], []) == (0.0, 0)
+    v = _make_group([_make_video('/a.mp4', _utc(2026, 1, 1), 60.0)])
+    assert solve_camera_offset([v], []) == (0.0, 0)
+    assert solve_camera_offset([], [_utc(2026, 1, 1)]) == (0.0, 0)
+
+
+def test_solve_camera_offset_recovers_known_offset():
+    true_starts = [_utc(2026, 6, 24, 9, 0, 0),
+                   _utc(2026, 6, 24, 10, 30, 0),
+                   _utc(2026, 6, 24, 12, 0, 0)]
+    applied_offset = 7100.0  # camera clock reports times ~2h behind reality
+    groups = [
+        _make_group([_make_video(f'/v{i}.mp4', st - timedelta(seconds=applied_offset), 600.0)])
+        for i, st in enumerate(true_starts)
+    ]
+    offset, count = solve_camera_offset(groups, true_starts)
+    assert count == 3
+    assert offset == pytest.approx(applied_offset, abs=0.01)
+
+
+def test_solve_camera_offset_recovers_multiday_offset():
+    # Camera date, not just time, was wrong — offset spans several days.
+    true_starts = [_utc(2026, 6, 24, 9, 0, 0), _utc(2026, 6, 24, 14, 0, 0)]
+    applied_offset = 3 * 86400 + 3661.0
+    groups = [
+        _make_group([_make_video(f'/v{i}.mp4', st - timedelta(seconds=applied_offset), 300.0)])
+        for i, st in enumerate(true_starts)
+    ]
+    offset, count = solve_camera_offset(groups, true_starts)
+    assert count == 2
+    assert offset == pytest.approx(applied_offset, abs=0.01)
+
+
+def test_solve_camera_offset_ignores_decoys():
+    true_starts = [_utc(2026, 6, 24, 9, 0, 0),
+                   _utc(2026, 6, 24, 11, 15, 0),
+                   _utc(2026, 6, 24, 15, 40, 0)]
+    applied_offset = -5000.0
+    groups = [
+        _make_group([_make_video(f'/v{i}.mp4', st - timedelta(seconds=applied_offset), 400.0)])
+        for i, st in enumerate(true_starts)
+    ]
+    # Decoy video group with a totally unrelated raw timestamp.
+    groups.append(_make_group([_make_video('/decoy.mp4', _utc(2019, 1, 1, 3, 0, 0), 120.0)]))
+    # Decoy session with no corresponding video at all.
+    session_times = true_starts + [_utc(2026, 6, 24, 20, 0, 0)]
+
+    offset, count = solve_camera_offset(groups, session_times)
+    assert count == 3
+    assert offset == pytest.approx(applied_offset, abs=0.01)
+
+
+def test_solve_camera_offset_partial_match_picks_best_alignment():
+    # Mirrors the real scenario: a folder of clips where only some correspond
+    # to a telemetry session for that day (e.g. paddock/warm-up footage mixed
+    # in) — the solver should still land on the offset that matches the most.
+    true_starts = [_utc(2026, 6, 24, 9, 0, 0),
+                   _utc(2026, 6, 24, 10, 20, 0),
+                   _utc(2026, 6, 24, 13, 5, 0),
+                   _utc(2026, 6, 24, 16, 45, 0)]
+    applied_offset = 12345.0
+    matching_groups = [
+        _make_group([_make_video(f'/m{i}.mp4', st - timedelta(seconds=applied_offset), 500.0)])
+        for i, st in enumerate(true_starts)
+    ]
+    # Extra clips from the same camera/day with the same clock error, but far
+    # from any session time even once the correct offset is applied.
+    extra_groups = [
+        _make_group([_make_video('/extra1.mp4',
+                     true_starts[0] - timedelta(seconds=applied_offset) - timedelta(minutes=90), 60.0)]),
+        _make_group([_make_video('/extra2.mp4',
+                     true_starts[-1] - timedelta(seconds=applied_offset) + timedelta(minutes=90), 60.0)]),
+    ]
+    offset, count = solve_camera_offset(matching_groups + extra_groups, true_starts)
+    assert count == 4
+    assert offset == pytest.approx(applied_offset, abs=0.01)

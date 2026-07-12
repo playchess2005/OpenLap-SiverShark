@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import threading
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE     = Path.home() / '.openlap' / 'config.json'
-SCAN_CACHE_FILE = Path.home() / '.openlap' / 'scan_cache.json'
+CONFIG_FILE          = Path.home() / '.openlap' / 'config.json'
+SCAN_CACHE_FILE      = Path.home() / '.openlap' / 'scan_cache.json'
+FILE_META_CACHE_FILE = Path.home() / '.openlap' / 'file_meta_cache.json'
 _OLD_CONFIG_V2  = Path.home() / '.telemetry_overlay' / 'config.json'
 _OLD_CONFIG_V1  = Path.home() / '.racebox_studio'    / 'config.json'
 
@@ -82,6 +84,9 @@ class AppConfig:
     auto_sync_enabled: bool            = False
     track_map_selections: Dict[str, str] = field(default_factory=dict)
     # track_name_lower → osm_way_id; controls which OSM way is used as circuit outline
+    linked_camera_folders: List[dict] = field(default_factory=list)
+    # [{day: 'YYYY-MM-DD', folder: str, offset_seconds: float, source: 'auto'}, ...]
+    # Manual fix for action cams with a wrong clock — see webview_api.link_camera_folder()
 
     def all_telemetry_paths(self) -> List[str]:
         """Return all unique non-empty telemetry paths to scan.
@@ -185,6 +190,39 @@ def load_scan_cache() -> dict:
         return {}
 
 
+# ── Per-file metadata cache ─────────────────────────────────────────────────────
+# Keyed by absolute path, invalidated on (size, mtime) change. Lets rescans skip
+# ffprobe / file-header reads / full session parses for files that haven't changed.
+# Namespaces: 'videos' (ffprobe results), 'csvs' (telemetry-file sniff results),
+# 'meta' (lightweight session meta for formats that require a full parse).
+
+_file_meta_cache_lock = threading.Lock()
+
+
+def load_file_meta_cache() -> dict:
+    """Load the per-file metadata cache, or an empty structure on miss/error."""
+    with _file_meta_cache_lock:
+        try:
+            with open(FILE_META_CACHE_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+    for key in ('videos', 'csvs', 'meta'):
+        data.setdefault(key, {})
+    return data
+
+
+def save_file_meta_cache(cache: dict) -> None:
+    """Persist the per-file metadata cache."""
+    with _file_meta_cache_lock:
+        try:
+            FILE_META_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(FILE_META_CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(cache, f)
+        except Exception:
+            logger.debug('Failed to write file meta cache', exc_info=True)
+
+
 # ── Reconstruction helpers ─────────────────────────────────────────────────────
 
 def overlay_from_dict(overlay_data: dict) -> OverlayLayout:
@@ -260,4 +298,5 @@ def _from_dict(data: dict) -> AppConfig:
         auto_sync_failed     = data.get('auto_sync_failed',     []),
         auto_sync_enabled    = bool(data.get('auto_sync_enabled', False)),
         track_map_selections = data.get('track_map_selections', {}),
+        linked_camera_folders = data.get('linked_camera_folders', []),
     )

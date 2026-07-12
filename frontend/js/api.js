@@ -26,6 +26,7 @@ const API = (() => {
                                   active_preset: '', session_info: {},
                                   overlay: { is_bike: false, theme: 'Dark', gauges: [] } }),
       scan_sessions:     () => [],
+      scan_all_sessions: () => [],
       get_laps:          () => [],
       load_lap_history:  () => [],
       save_config:       () => null,
@@ -54,6 +55,8 @@ const API = (() => {
       save_sessions_cache:      () => null,
       convert_xrk_session:       () => ({ ok: false, error: 'mock' }),
       assign_video:              () => null,
+      link_camera_folder:        () => ({ offset_seconds: 0, matched_count: 0, total_groups: 0, total_sessions: 0 }),
+      unlink_camera_folder:      () => null,
       aim_dll_status:                () => ({ found: false, path: '' }),
       download_aim_dll:              () => null,
       download_racebox_sessions:     () => null,
@@ -93,6 +96,7 @@ const API = (() => {
     openFileDialog:    (filters)       => call('open_file_dialog', filters),
 
     scanSessions:      (folder)        => call('scan_sessions', folder),
+    scanAllSessions:   (paths)         => call('scan_all_sessions', paths),
     getLaps:           (csvPath)       => call('get_laps', csvPath),
     loadLapHistory:    (csvPath, lapIdx) => call('load_lap_history', csvPath, lapIdx),
 
@@ -122,6 +126,8 @@ const API = (() => {
 
     convertXrkSession:        (csvPath)            => call('convert_xrk_session', csvPath),
     assignVideo:              (csvPath, videoPath) => call('assign_video', csvPath, videoPath),
+    linkCameraFolder:   (day, folder, daySessions) => call('link_camera_folder', day, folder, daySessions),
+    unlinkCameraFolder:       (day, folder)        => call('unlink_camera_folder', day, folder),
     aimDllStatus:               ()                   => call('aim_dll_status'),
     downloadAimDll:             ()                   => call('download_aim_dll'),
     downloadRaceboxSessions:    ()                   => call('download_racebox_sessions'),
