@@ -203,6 +203,15 @@ Common use cases: karting, circuit racing, track days, hillclimb, motorcycle tra
 
 ---
 
+## Credits
+
+Thanks to community contributors who've helped extend OpenLap beyond Windows:
+
+- **[caezium](https://github.com/caezium)** — macOS + Linux cross-platform support, including AIM `.xrk` reading via `libxrk` for non-Windows platforms
+- **[jorlandobr](https://github.com/jorlandobr)** — Linux compatibility fixes (Pop!_OS icon loading, local storage, DevTools behavior) and RaceBox RPM channel support
+
+---
+
 ## Support the project
 
 OpenLap is free and always will be. If you want to see more/faster progress, please consider sponsoring.
