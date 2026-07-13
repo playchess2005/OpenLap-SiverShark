@@ -49,6 +49,11 @@ def test_load_gpx_has_one_lap():
     assert session.laps[0].lap_num == 1
 
 
+def test_load_gpx_source_speed_unit():
+    session = load_gpx(GPX_PATH)
+    assert session.source_speed_unit == 'kmh'
+
+
 def test_load_gpx_lap_is_not_outlap():
     session = load_gpx(GPX_PATH)
     assert session.laps[0].is_outlap is False

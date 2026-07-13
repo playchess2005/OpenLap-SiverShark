@@ -276,6 +276,58 @@ describe('Export page — previewSession → selectedItems wiring', () => {
     cleanupContainer(freshContainer);
   });
 
+  // ── speed_unit passthrough ─────────────────────────────────────────────────
+
+  test('speed_unit from config is forwarded to startExport', async () => {
+    const startExport = vi.fn(async () => null);
+    globalThis.API = makeAPI({
+      startExport,
+      getOverlay: vi.fn(async () => ({})),
+      getConfig:  vi.fn(async () => ({ speed_unit: 'mph' })),
+    });
+    const freshRouter = makeRouter();
+    globalThis.Router = freshRouter;
+    loadPage('pages/export.js');
+    const freshPage = freshRouter.getPage('export');
+    const freshContainer = makeContainer();
+
+    State.set('previewSession', PREVIEW);
+    await freshPage.mount(freshContainer);
+
+    freshContainer.querySelector('#exp-start-btn').click();
+    await flushAsync();
+
+    expect(startExport.mock.calls[0][0].speed_unit).toBe('mph');
+
+    freshPage.unmount();
+    cleanupContainer(freshContainer);
+  });
+
+  test('speed_unit defaults to "auto" when config has no speed_unit', async () => {
+    const startExport = vi.fn(async () => null);
+    globalThis.API = makeAPI({
+      startExport,
+      getOverlay: vi.fn(async () => ({})),
+      getConfig:  vi.fn(async () => ({})),
+    });
+    const freshRouter = makeRouter();
+    globalThis.Router = freshRouter;
+    loadPage('pages/export.js');
+    const freshPage = freshRouter.getPage('export');
+    const freshContainer = makeContainer();
+
+    State.set('previewSession', PREVIEW);
+    await freshPage.mount(freshContainer);
+
+    freshContainer.querySelector('#exp-start-btn').click();
+    await flushAsync();
+
+    expect(startExport.mock.calls[0][0].speed_unit).toBe('auto');
+
+    freshPage.unmount();
+    cleanupContainer(freshContainer);
+  });
+
   test('ref_mode defaults to "none" when overlay has no ref_mode', async () => {
     const startExport = vi.fn(async () => null);
     globalThis.API = makeAPI({ startExport, getOverlay: vi.fn(async () => ({})) });

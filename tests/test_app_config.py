@@ -28,6 +28,10 @@ def test_default_has_gauges():
     assert len(AppConfig().overlay.gauges) > 0
 
 
+def test_default_speed_unit_is_auto():
+    assert AppConfig().speed_unit == 'auto'
+
+
 # ── Save / load round-trip ─────────────────────────────────────────────────────
 
 def test_save_and_load_round_trip(tmp_config_dir):
@@ -64,6 +68,23 @@ def test_gauges_preserved_after_round_trip(tmp_config_dir):
 
     loaded = AppConfig.load()
     assert loaded.overlay.gauges[0]['channel'] == 'rpm'
+
+
+def test_speed_unit_preserved(tmp_config_dir):
+    cfg = AppConfig()
+    cfg.speed_unit = 'mph'
+    cfg.save()
+
+    loaded = AppConfig.load()
+    assert loaded.speed_unit == 'mph'
+
+
+def test_speed_unit_missing_key_defaults_to_auto(tmp_config_dir):
+    import app_config
+    app_config.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    app_config.CONFIG_FILE.write_text(json.dumps({'telemetry_path': '/x'}))
+    loaded = AppConfig.load()
+    assert loaded.speed_unit == 'auto'
 
 
 def test_presets_preserved(tmp_config_dir):
@@ -123,3 +144,9 @@ def test_from_dict_empty():
     cfg = _from_dict({})
     assert cfg.telemetry_path == ""
     assert isinstance(cfg.overlay, OverlayLayout)
+    assert cfg.speed_unit == 'auto'
+
+
+def test_from_dict_speed_unit():
+    cfg = _from_dict({'speed_unit': 'ms'})
+    assert cfg.speed_unit == 'ms'

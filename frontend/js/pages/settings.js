@@ -140,6 +140,22 @@
       <div id="enc-results" class="enc-results hidden"></div>
     </section>
 
+    <!-- Units -->
+    <section class="settings-section">
+      <div class="section-title">Units</div>
+      <p class="section-hint">Speed unit shown in previews and exported video.
+        "Auto" uses whatever unit each telemetry file was recorded in.</p>
+      <div class="form-row">
+        <label>Speed unit</label>
+        <select data-config-key="speed_unit" class="input-field">
+          <option value="auto" ${cfg.speed_unit === 'auto' || !cfg.speed_unit ? 'selected' : ''}>Auto (from file)</option>
+          <option value="kmh"  ${cfg.speed_unit === 'kmh'  ? 'selected' : ''}>km/h</option>
+          <option value="mph"  ${cfg.speed_unit === 'mph'  ? 'selected' : ''}>mph</option>
+          <option value="ms"   ${cfg.speed_unit === 'ms'   ? 'selected' : ''}>m/s</option>
+        </select>
+      </div>
+    </section>
+
     <!-- Auto Sync -->
     <section class="settings-section">
       <div class="section-title">Auto Sync</div>

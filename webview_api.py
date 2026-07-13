@@ -195,6 +195,8 @@ class WebviewAPI:
             self._config.crf = int(data['crf'])
         if 'workers' in data:
             self._config.workers = int(data['workers'])
+        if 'speed_unit' in data:
+            self._config.speed_unit = str(data['speed_unit'])
         # Merge dict fields (JS may send partial updates)
         if 'offsets' in data and isinstance(data['offsets'], dict):
             self._config.offsets.update(data['offsets'])
@@ -489,16 +491,17 @@ class WebviewAPI:
 
                 session = self._load_session(csv_path)
                 if not session:
-                    result = {'track': '', 'laps': '', 'best': '', 'best_secs': None}
+                    result = {'track': '', 'laps': '', 'best': '', 'best_secs': None, 'speed_unit': 'kmh'}
                 else:
                     laps = getattr(session, 'laps', [])
                     durs = [l.duration for l in laps if l.duration]
                     best = min(durs) if durs else None
                     result = {
-                        'track':     getattr(session, 'track', '') or '',
-                        'laps':      str(len(laps)),
-                        'best':      f'{best:.3f}s' if best else '',
-                        'best_secs': best,
+                        'track':      getattr(session, 'track', '') or '',
+                        'laps':       str(len(laps)),
+                        'best':       f'{best:.3f}s' if best else '',
+                        'best_secs':  best,
+                        'speed_unit': getattr(session, 'source_speed_unit', 'kmh'),
                     }
                 if stat:
                     meta_cache[csv_path] = {'size': stat[0], 'mtime': stat[1], 'data': result}
@@ -513,11 +516,13 @@ class WebviewAPI:
                     first = f.readline()
                     if first.startswith('Time (s),'):
                         # AIM format — no header block
+                        import aim_data
                         return {
                             'track': '',
                             'laps': '',
                             'best': '',
                             'best_secs': None,
+                            'speed_unit': aim_data.sniff_speed_unit(first),
                         }
                     # RaceBox CSV — key:value header
                     from itertools import chain
@@ -536,11 +541,11 @@ class WebviewAPI:
                         elif line.startswith('Record,'):
                             break
                 return {'track': track, 'laps': laps_str,
-                        'best': best_str, 'best_secs': best_secs}
+                        'best': best_str, 'best_secs': best_secs, 'speed_unit': 'kmh'}
 
         except Exception:
             logger.exception('get_session_meta failed for %s', csv_path)
-        return {'track': '', 'laps': '', 'best': '', 'best_secs': None}
+        return {'track': '', 'laps': '', 'best': '', 'best_secs': None, 'speed_unit': 'kmh'}
 
     # ── Lap loading ───────────────────────────────────────────────────────────
     def get_laps(self, csv_path: str) -> list:
@@ -1000,6 +1005,7 @@ class WebviewAPI:
                 done_cb           = done_cb,
                 overlay_only          = params.get('overlay_only', False),
                 track_map_selections  = getattr(self._config, 'track_map_selections', {}) or {},
+                speed_unit_pref       = params.get('speed_unit', 'auto'),
             )
         except Exception as e:
             done_cb(False, str(e))

@@ -68,11 +68,28 @@ def get_channel_styles(channel: str, is_bike: bool = False) -> list:
     return list(_DEFAULT_GAUGE_STYLES)
 
 
-def gauge_data(channel: str, history: list) -> dict:
+def _resolved_channel_meta(channel: str, unit: str) -> dict:
+    """Channel metadata, with the 'speed' channel's unit/bounds converted to
+    the display *unit* ('kmh'|'mph'|'ms'). Never mutates GAUGE_CHANNELS."""
+    meta = dict(GAUGE_CHANNELS.get(channel, GAUGE_CHANNELS['speed']))
+    if channel == 'speed' and unit != 'kmh':
+        from units import KMH_PER_UNIT, unit_label
+        factor = KMH_PER_UNIT.get(unit, 1.0)
+        meta['unit'] = unit_label(unit)
+        meta['min']  = meta['min'] * factor
+        meta['max']  = meta['max'] * factor
+    return meta
+
+
+def gauge_data(channel: str, history: list, unit: str = 'kmh') -> dict:
     """Build the data dict passed to a gauge render() function."""
-    meta = GAUGE_CHANNELS.get(channel, GAUGE_CHANNELS['speed'])
+    meta = _resolved_channel_meta(channel, unit)
     hk   = meta['hist_key']
     vals = [p.get(hk, 0.0) for p in history] if history else [0.0]
+    if channel == 'speed' and unit != 'kmh':
+        from units import KMH_PER_UNIT
+        factor = KMH_PER_UNIT.get(unit, 1.0)
+        vals = [v * factor for v in vals]
     raw_value = vals[-1] if vals else 0.0
     return {
         'value':            raw_value,
@@ -89,21 +106,26 @@ def gauge_data(channel: str, history: list) -> dict:
 
 
 def build_multi_data(channels_list: list, history: list,
-                     ref_history: list = None) -> dict:
+                     ref_history: list = None, unit: str = 'kmh') -> dict:
     """
     Build the data dict for a Multi-Line gauge.
     Each entry in channels_list must be a key of GAUGE_CHANNELS.
     """
+    from units import KMH_PER_UNIT
     entries = []
     for i, ch in enumerate(channels_list):
-        meta = GAUGE_CHANNELS.get(ch)
-        if not meta:
+        if ch not in GAUGE_CHANNELS:
             continue
+        meta = _resolved_channel_meta(ch, unit)
         hk   = meta['hist_key']
         vals = [p.get(hk, 0.0) for p in history] if history else [0.0]
         ref_vals = []
         if ref_history:
             ref_vals = [p.get(hk, 0.0) for p in ref_history]
+        if ch == 'speed' and unit != 'kmh':
+            factor = KMH_PER_UNIT.get(unit, 1.0)
+            vals     = [v * factor for v in vals]
+            ref_vals = [v * factor for v in ref_vals]
         entries.append({
             'channel':          ch,
             'label':            meta['label'],
@@ -155,10 +177,10 @@ def dummy_info_data() -> dict:
     }
 
 
-def dummy_gauge_data(channel: str) -> dict:
+def dummy_gauge_data(channel: str, unit: str = 'kmh') -> dict:
     """Fake data for overlay editor previews."""
     import math
-    meta = GAUGE_CHANNELS.get(channel, GAUGE_CHANNELS['speed'])
+    meta = _resolved_channel_meta(channel, unit)
     mn, mx = meta['min'], meta['max']
     rng    = mx - mn
     t = 0.0
@@ -195,7 +217,7 @@ def dummy_gauge_data(channel: str) -> dict:
                 'gy':    1.5 * math.sin(t * 1.8),
                 'gx':    0.8 * math.sin(t * 1.2),
             })
-        return build_multi_data(['speed', 'gforce_lat', 'gforce_lon'], fake_history)
+        return build_multi_data(['speed', 'gforce_lat', 'gforce_lon'], fake_history, unit=unit)
 
     # Info preview
     if channel == 'info':

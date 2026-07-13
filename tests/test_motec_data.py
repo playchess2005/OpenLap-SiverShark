@@ -11,7 +11,7 @@ import pytest
 
 import motec_data
 from motec_data import (
-    _cstr, _parse_channels, _find_channel,
+    _cstr, _parse_channels, _find_channel, _classify_speed_unit,
     _build_abs_time, _interp, is_motec_ld,
 )
 
@@ -83,6 +83,26 @@ def test_interp_after_range_uses_default():
 def test_interp_empty_src_returns_defaults():
     result = _interp([1.0, 2.0], [], [], default=7.0)
     assert result == [7.0, 7.0]
+
+
+def test_classify_speed_unit_mph():
+    assert _classify_speed_unit('mph') == ('mph', pytest.approx(1.60934))
+
+
+def test_classify_speed_unit_kmh():
+    assert _classify_speed_unit('km/h') == ('kmh', pytest.approx(1.0))
+
+
+def test_classify_speed_unit_ms():
+    assert _classify_speed_unit('m/s') == ('ms', pytest.approx(3.6))
+
+
+def test_classify_speed_unit_empty_defaults_ms():
+    assert _classify_speed_unit('') == ('ms', pytest.approx(3.6))
+
+
+def test_classify_speed_unit_case_insensitive():
+    assert _classify_speed_unit('MPH') == ('mph', pytest.approx(1.60934))
 
 
 def test_is_motec_ld_rejects_non_ld_extension(tmp_path):

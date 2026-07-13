@@ -430,6 +430,7 @@
       encoder:          cfg.encoder              || 'libx264',
       crf:              cfg.crf                  ?? 18,
       workers:          cfg.workers              ?? 4,
+      speed_unit:       cfg.speed_unit           || 'auto',
       is_bike:          layout.is_bike           ?? false,
       show_map:         layout.show_map          ?? true,
       show_tel:         layout.show_tel          ?? true,

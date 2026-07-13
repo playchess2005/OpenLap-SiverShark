@@ -103,6 +103,7 @@ class Session:
     laps:          List[Lap]
     is_bike:       bool = False
     csv_path:      str  = ''
+    source_speed_unit: str = 'kmh'   # 'kmh' | 'mph' | 'ms' — unit detected in the source file
 
     @property
     def start_time(self) -> Optional[datetime]:

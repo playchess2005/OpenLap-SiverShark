@@ -77,6 +77,8 @@ class AppConfig:
     encoder: str   = 'libx264'
     crf:     int   = 18
     workers: int   = 4
+    speed_unit: str = 'auto'
+    # 'auto' (use each session's detected source unit) | 'kmh' | 'mph' | 'ms'
     offset_sources:    Dict[str, str]  = field(default_factory=dict)
     # 'user' = manually confirmed, 'auto' = auto-detected (unconfirmed)
     auto_sync_failed:  List[str]       = field(default_factory=list)
@@ -294,6 +296,7 @@ def _from_dict(data: dict) -> AppConfig:
         encoder           = data.get('encoder',           'libx264'),
         crf               = int(data.get('crf',           18)),
         workers           = int(data.get('workers',       4)),
+        speed_unit        = data.get('speed_unit',        'auto'),
         offset_sources       = data.get('offset_sources',       {}),
         auto_sync_failed     = data.get('auto_sync_failed',     []),
         auto_sync_enabled    = bool(data.get('auto_sync_enabled', False)),

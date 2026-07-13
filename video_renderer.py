@@ -23,6 +23,7 @@ import numpy as np
 from data_model import Session, Lap
 from overlay_worker import render_frame_worker, scale_factor, default_layout
 from exceptions import VideoConcatError, VideoMuxError, LapOutOfRangeError
+import units as _units
 
 _N_SECTORS = 3  # number of track sectors used for delta-time display
 
@@ -437,6 +438,7 @@ def render_lap(
     overlay_only:       bool  = False,         # render transparent overlay .mov (ProRes 4444)
     track_map_geometry: Optional[list] = None, # [{lat,lon}] OSM circuit outline, or None
     track_map_areas:    Optional[list] = None, # [{lats,lons}] OSM area polygons, or None
+    speed_unit:         str = 'kmh',           # 'kmh' | 'mph' | 'ms' — already-resolved display unit
 ) -> None:
     """
     Render one video with telemetry overlay.
@@ -550,10 +552,10 @@ def render_lap(
 
     speed_pts = job.lap.points if job.lap else session.all_points
     if speed_pts:
-        raw_max   = max(p.speed for p in speed_pts)
-        max_speed = max(50.0, math.ceil(raw_max * 1.10 / 50) * 50)
+        raw_max   = max(p.speed for p in speed_pts)   # km/h
+        max_speed = _units.dial_ceiling(raw_max, speed_unit)   # already in speed_unit
     else:
-        max_speed = 300.0
+        max_speed = _units.DIAL_MIN_CEILING.get(speed_unit, 50.0) * 6.0
 
     map_lats, map_lons, _map_arr_np = _build_map_data(job, session, show_map)
 
@@ -721,7 +723,8 @@ def render_lap(
                  overlay_only,
                  _track_map_lats,
                  _track_map_lons,
-                 _track_map_areas)
+                 _track_map_areas,
+                 speed_unit)
                 for frm, (hist, ref_hist, cur_map_idx) in zip(chunk_frames, chunk_meta)
             ]
 

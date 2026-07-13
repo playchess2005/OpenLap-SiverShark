@@ -44,8 +44,11 @@ def render_frame_worker(args: Tuple) -> bytes:
             show_map, show_telemetry,
             is_bike,
             overlay_layout, # dict — see default_layout()
-            max_speed,      # float — session max speed rounded up +10%
-            sectors)        # list of pre-computed sector dicts, or []
+            max_speed,      # float — session max speed rounded up +10%, in speed_unit
+            sectors,        # list of pre-computed sector dicts, or []
+            ...,            # session_meta, ref_lats, ref_lons, ref_duration, overlay_only,
+                             # track_map_lats, track_map_lons, track_map_areas,
+            speed_unit)     # 'kmh'|'mph'|'ms' — already-resolved display unit for the speed channel
     """
     import numpy as np
     from style_registry  import render_style
@@ -69,6 +72,7 @@ def render_frame_worker(args: Tuple) -> bytes:
     track_map_lats    = _extra[5] if len(_extra) > 5 else []
     track_map_lons    = _extra[6] if len(_extra) > 6 else []
     track_map_areas   = _extra[7] if len(_extra) > 7 else []
+    speed_unit        = _extra[8] if len(_extra) > 8 else 'kmh'
 
     from gauge_channels import gauge_data_lap_info
 
@@ -184,10 +188,10 @@ def render_frame_worker(args: Tuple) -> bytes:
                 if not sub_channels:
                     continue
                 gd = build_multi_data(sub_channels, history,
-                                      ref_history if ref_history else [])
+                                      ref_history if ref_history else [], unit=speed_unit)
                 gd['_theme'] = theme
             else:
-                gd = gauge_data(channel, history)
+                gd = gauge_data(channel, history, unit=speed_unit)
                 gd['lap_duration'] = lap_duration
                 gd['is_bike']      = is_bike
                 gd['_theme']       = theme
@@ -200,7 +204,12 @@ def render_frame_worker(args: Tuple) -> bytes:
                     gd['max_val'] = max_speed
                 if ref_history:
                     hk = GAUGE_CHANNELS.get(channel, GAUGE_CHANNELS['speed'])['hist_key']
-                    gd['ref_history_vals'] = [p.get(hk, 0.0) for p in ref_history]
+                    ref_vals = [p.get(hk, 0.0) for p in ref_history]
+                    if channel == 'speed' and speed_unit != 'kmh':
+                        from units import KMH_PER_UNIT
+                        factor = KMH_PER_UNIT.get(speed_unit, 1.0)
+                        ref_vals = [v * factor for v in ref_vals]
+                    gd['ref_history_vals'] = ref_vals
                 if channel == 'g_meter':
                     gd['history_gy'] = [p.get('gy', 0.0) for p in history]
                     gd['value_gy']   = history[-1].get('gy', 0.0) if history else 0.0

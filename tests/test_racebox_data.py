@@ -35,6 +35,11 @@ def test_load_csv_car_has_laps(racebox_car_session):
     assert len(racebox_car_session.laps) > 0
 
 
+def test_load_csv_source_speed_unit(racebox_car_session):
+    # RaceBox CSV 'Speed' column has no unit tag; app always exports km/h
+    assert racebox_car_session.source_speed_unit == 'kmh'
+
+
 def test_load_csv_bike_is_bike(racebox_bike_csv_path):
     session = load_csv(racebox_bike_csv_path)
     assert session.is_bike is True

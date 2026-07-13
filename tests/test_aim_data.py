@@ -1,5 +1,5 @@
 import pytest
-from aim_data import _find_col, _safe, is_aim_csv, load_csv
+from aim_data import _find_col, _safe, is_aim_csv, load_csv, sniff_speed_unit
 from exceptions import NoDataRowsError
 
 
@@ -97,6 +97,30 @@ def test_load_csv_speed_unit_conversion(aim_csv_path):
 def test_load_csv_session_date_from_comment(aim_csv_path):
     session = load_csv(aim_csv_path)
     assert '2024-06-15' in session.date_utc
+
+
+def test_load_csv_source_speed_unit_ms(aim_csv_path):
+    # Fixture's GPS_Speed column is tagged [m/s]
+    session = load_csv(aim_csv_path)
+    assert session.source_speed_unit == 'ms'
+
+
+# ── sniff_speed_unit ─────────────────────────────────────────────────────────
+
+def test_sniff_speed_unit_ms():
+    assert sniff_speed_unit('GPS_Speed [m/s]') == 'ms'
+
+
+def test_sniff_speed_unit_mph():
+    assert sniff_speed_unit('GPS_Speed [mph]') == 'mph'
+
+
+def test_sniff_speed_unit_untagged_defaults_kmh():
+    assert sniff_speed_unit('GPS_Speed') == 'kmh'
+
+
+def test_sniff_speed_unit_none():
+    assert sniff_speed_unit(None) == 'kmh'
 
 
 def test_load_csv_has_laps(aim_csv_path):

@@ -64,6 +64,7 @@ def run_export(
     ref_lap_csv_path:     str  = '',
     ref_lap_num:          int  = 0,
     track_map_selections: dict = None,
+    speed_unit_pref:      str  = 'auto',
 ) -> None:
     """Render one or more sessions.  Designed to be called from a background thread."""
     from video_renderer import render_lap, RenderJob, concat_videos
@@ -71,6 +72,7 @@ def run_export(
     from utils import compute_lean_angle
     from reference_resolver import resolve_reference_lap
     from app_config import load_scan_cache
+    from units import resolve_speed_unit
 
     scan_cache = load_scan_cache()
 
@@ -111,6 +113,9 @@ def run_export(
             errors.append(str(e))
             done_jobs += 1
             continue
+
+        resolved_speed_unit = resolve_speed_unit(
+            speed_unit_pref, getattr(sess, 'source_speed_unit', 'kmh'))
 
         # Apply per-session bike override, then compute lean angles when
         # the session is a bike but lean was not directly logged (e.g. AIM).
@@ -249,6 +254,7 @@ def run_export(
                     overlay_only=overlay_only,
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
+                    speed_unit=resolved_speed_unit,
                 )
 
             elif item_scope == 'fastest':
@@ -271,6 +277,7 @@ def run_export(
                     overlay_only=overlay_only,
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
+                    speed_unit=resolved_speed_unit,
                 )
 
             elif item_scope == 'all_laps':
@@ -295,6 +302,7 @@ def run_export(
                         overlay_only=overlay_only,
                         track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
+                    speed_unit=resolved_speed_unit,
                     )
 
             elif item_scope == 'lap_range':
@@ -338,6 +346,7 @@ def run_export(
                     overlay_only=overlay_only,
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
+                    speed_unit=resolved_speed_unit,
                 )
 
             elif item_scope == 'full':
@@ -355,6 +364,7 @@ def run_export(
                     overlay_only=overlay_only,
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
+                    speed_unit=resolved_speed_unit,
                 )
 
             elif item_scope == 'clip':
@@ -390,6 +400,7 @@ def run_export(
                     overlay_only=overlay_only,
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
+                    speed_unit=resolved_speed_unit,
                 )
 
         except Exception as e:

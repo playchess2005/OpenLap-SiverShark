@@ -333,4 +333,5 @@ def load_gpx(path: str) -> Session:
         laps          = [lap],
         is_bike       = False,
         csv_path      = path,
+        source_speed_unit = 'kmh',
     )

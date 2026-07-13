@@ -95,4 +95,5 @@ def load_csv(path: str) -> Session:
         session_type=meta.get('Session Type', ''),
         best_lap_time=float(meta.get('Best Lap Time', 0)),
         all_points=all_pts, laps=laps, is_bike=is_bike, csv_path=path,
+        source_speed_unit='kmh',  # RaceBox CSV 'Speed' column has no unit tag; app always exports km/h
     )

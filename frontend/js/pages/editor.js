@@ -115,6 +115,17 @@
   let _mountGen        = 0;     // incremented on unmount; guards stale async continuations
   let _resizeObserver  = null;
   let _trackMapGeometry = null; // {lats, lons} from OSM — loaded async on session change
+  let _appConfig = null;   // AppConfig dict, refreshed on each mount() — see API.getConfig()
+
+  // ── Speed unit conversion (mirrors units.py on the Python side) ────────────
+  const KMH_PER_UNIT      = { kmh: 1.0, mph: 0.621371, ms: 0.277778 };
+  const SPEED_UNIT_LABELS = { kmh: 'km/h', mph: 'mph', ms: 'm/s' };
+  function _kmhToUnit(v, unit) { return v * (KMH_PER_UNIT[unit] ?? 1.0); }
+  function _effSpeedUnit() {
+    const cfgUnit = _appConfig?.speed_unit;
+    if (cfgUnit && cfgUnit !== 'auto') return cfgUnit;
+    return (_liveSessionMeta && _liveSessionMeta.speed_unit) || 'kmh';
+  }
 
   // Constants (normalised)
   const MIN_NORM        = 0.04;
@@ -165,8 +176,9 @@
         const keys = (gauge?.multi_channels && gauge.multi_channels.length)
           ? gauge.multi_channels
           : ['speed', 'gforce_lat'];
+        const LF = _liveFields(_effSpeedUnit());
         const multi_channels = keys.map((ch, ci) => {
-          const m = _LIVE_FIELDS[ch] || { label: ch, unit: '', min: 0, max: 100, sym: false, key: ch };
+          const m = LF[ch] || { label: ch, unit: '', min: 0, max: 100, sym: false, key: ch };
           const amp = (m.max - m.min) * 0.35;
           const off = (m.max + m.min) / 2;
           return {
@@ -178,8 +190,9 @@
         return { ...base, multi_channels };
       }
       default: {
+        const effUnit = _effSpeedUnit();
         const meta = {
-          speed:       {label:'Speed',     unit:'km/h', min:0,   max:250, sym:false, val:185},
+          speed:       {label:'Speed',     unit:SPEED_UNIT_LABELS[effUnit], min:_kmhToUnit(0, effUnit), max:_kmhToUnit(250, effUnit), sym:false, val:_kmhToUnit(185, effUnit)},
           rpm:         {label:'RPM',       unit:'rpm',  min:0,   max:14000, sym:false, val:7200},
           exhaust_temp:{label:'Exh Temp',  unit:'°C',   min:0,   max:900, sym:false, val:650},
           gforce_lon:  {label:'Long G',    unit:'G',    min:-3,  max:3,   sym:true,  val:-1.2},
@@ -217,16 +230,19 @@
   }
 
   // ── Live data builder ──────────────────────────────────────────────────────
-  const _LIVE_FIELDS = {
-    speed:       { key:'speed',       label:'Speed',    unit:'km/h', min:0,   max:250,   sym:false },
-    gforce_lon:  { key:'gx',          label:'Long G',   unit:'G',    min:-3,  max:3,     sym:true  },
-    gforce_lat:  { key:'gy',          label:'Lat G',    unit:'G',    min:-3,  max:3,     sym:true  },
-    rpm:         { key:'rpm',         label:'RPM',      unit:'rpm',  min:0,   max:14000, sym:false },
-    exhaust_temp:{ key:'exhaust_temp',label:'Exh Temp', unit:'°C',   min:0,   max:900,   sym:false },
-    altitude:    { key:'alt',         label:'Altitude', unit:'m',    min:0,   max:500,   sym:false },
-    lean:        { key:'lean',        label:'Lean',     unit:'°',    min:-60, max:60,    sym:true  },
-    lap_time:    { key:'t',           label:'Lap Time', unit:'',     min:0,   max:300,   sym:false },
-  };
+  // 'speed' bounds/unit depend on the effective display unit (Auto/km-h/mph/m-s).
+  function _liveFields(effUnit) {
+    return {
+      speed:       { key:'speed',       label:'Speed',    unit:SPEED_UNIT_LABELS[effUnit], min:_kmhToUnit(0, effUnit), max:_kmhToUnit(250, effUnit), sym:false },
+      gforce_lon:  { key:'gx',          label:'Long G',   unit:'G',    min:-3,  max:3,     sym:true  },
+      gforce_lat:  { key:'gy',          label:'Lat G',    unit:'G',    min:-3,  max:3,     sym:true  },
+      rpm:         { key:'rpm',         label:'RPM',      unit:'rpm',  min:0,   max:14000, sym:false },
+      exhaust_temp:{ key:'exhaust_temp',label:'Exh Temp', unit:'°C',   min:0,   max:900,   sym:false },
+      altitude:    { key:'alt',         label:'Altitude', unit:'m',    min:0,   max:500,   sym:false },
+      lean:        { key:'lean',        label:'Lean',     unit:'°',    min:-60, max:60,    sym:true  },
+      lap_time:    { key:'t',           label:'Lap Time', unit:'',     min:0,   max:300,   sym:false },
+    };
+  }
 
   function buildLiveData(channel, style, frameIdx, gauge = null) {
     const theme = _layout?.theme || 'Dark';
@@ -261,14 +277,17 @@
       };
     }
     if (channel === 'multi') {
+      const effUnit = _effSpeedUnit();
+      const LF = _liveFields(effUnit);
       const keys = (gauge?.multi_channels && gauge.multi_channels.length)
         ? gauge.multi_channels : ['speed', 'gforce_lat'];
       const multi_channels = keys.map((ch, ci) => {
-        const m = _LIVE_FIELDS[ch] || { label: ch, unit: '', min: 0, max: 100, sym: false, key: ch };
+        const m = LF[ch] || { label: ch, unit: '', min: 0, max: 100, sym: false, key: ch };
+        const factor = (ch === 'speed') ? (KMH_PER_UNIT[effUnit] ?? 1.0) : 1.0;
         return {
           channel: ch, label: m.label, unit: m.unit,
-          values:    hist.map(pt => pt[m.key] ?? 0),
-          value:     p[m.key] ?? 0,
+          values:    hist.map(pt => (pt[m.key] ?? 0) * factor),
+          value:     (p[m.key] ?? 0) * factor,
           min_val:   m.min, max_val: m.max, symmetric: m.sym, color_idx: ci,
         };
       });
@@ -330,12 +349,14 @@
         fit:        gauge?.fit     || 'contain',
       };
     }
-    const m = _LIVE_FIELDS[channel];
+    const effUnit = _effSpeedUnit();
+    const m = _liveFields(effUnit)[channel];
     if (!m) return dummyData(channel, style, theme, gauge);
+    const factor = (channel === 'speed') ? (KMH_PER_UNIT[effUnit] ?? 1.0) : 1.0;
     return {
       theme, channel,
-      value:            p[m.key] ?? 0,
-      history_vals:     hist.map(pt => pt[m.key] ?? 0),
+      value:            (p[m.key] ?? 0) * factor,
+      history_vals:     hist.map(pt => (pt[m.key] ?? 0) * factor),
       ref_history_vals: [],
       label: m.label, unit: m.unit,
       min_val: m.min, max_val: m.max, symmetric: m.sym,
@@ -1665,6 +1686,7 @@
     // Only fetch port once — the server never changes address, and re-calling on fast
     // re-navigation can fail/reject and zero out _livePort, hiding the video element.
     if (!_livePort) _livePort = await API.getVideoServerPort().catch(() => 0);
+    _appConfig = await API.getConfig().catch(() => _appConfig || {});
     if (_mountGen !== myGen) return;  // navigated away while awaiting port
 
     // Fast-remount path: if the same session is already loaded in memory, skip all

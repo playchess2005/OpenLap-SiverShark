@@ -29,7 +29,8 @@ Each channel header (0x7C bytes):
 Data encoding: dtype=4 → packed IEEE-754 float32, no further scaling needed.
 
 Key channels used by this module:
-  SPEED    m/s    → km/h (* 3.6)
+  SPEED    unit read from channel header; m/s → km/h (* 3.6) unless the
+           unit tag says 'km/h' or 'mph'
   G_LAT    m/s²   → lateral G (/ 9.81)
   G_LON    m/s²   → longitudinal G (/ 9.81)
   RPMS     1/min  → rpm
@@ -121,6 +122,17 @@ def _find_channel(channels: Dict[str, dict], field: str) -> Optional[dict]:
         if alias in channels:
             return channels[alias]
     return None
+
+
+def _classify_speed_unit(unit_str: str) -> Tuple[str, float]:
+    """Classify a SPEED channel's unit tag into (source_speed_unit, factor_to_kmh).
+    Falls back to m/s (today's implicit default) for empty/unrecognised tags."""
+    low = (unit_str or '').lower()
+    if 'mph' in low:
+        return 'mph', 1.60934
+    if 'km' in low:
+        return 'kmh', 1.0
+    return 'ms', 3.6
 
 
 def _read_float32(data: bytes, ch: dict) -> List[float]:
@@ -301,7 +313,11 @@ def load_ld(path: str) -> Session:
             return None, None
         return _ch_times(ch), vals
 
-    speed_t,    speed_v    = _ch_vals('speed')     # m/s
+    speed_t,    speed_v    = _ch_vals('speed')     # m/s (default; see unit sniff below)
+
+    speed_ch = _find_channel(channels, 'speed')
+    source_speed_unit, speed_to_kmh = _classify_speed_unit(speed_ch['unit'] if speed_ch else '')
+
     g_lat_t,    g_lat_v    = _ch_vals('g_lat')     # m/s²
     g_lon_t,    g_lon_v    = _ch_vals('g_lon')     # m/s²
     rpm_t,      rpm_v      = _ch_vals('rpm')
@@ -322,7 +338,7 @@ def load_ld(path: str) -> Session:
     n = len(abs_times)
     all_pts: List[DataPoint] = []
     for i in range(n):
-        speed_kmh  = s_speed[i] * 3.6
+        speed_kmh  = s_speed[i] * speed_to_kmh
         gx         = s_g_lon[i] / _G    # longitudinal G
         gy         = s_g_lat[i] / _G    # lateral G
         elapsed    = abs_times[i]
@@ -409,4 +425,5 @@ def load_ld(path: str) -> Session:
         laps          = laps,
         is_bike       = False,
         csv_path      = path,
+        source_speed_unit = source_speed_unit,
     )

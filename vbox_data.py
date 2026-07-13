@@ -133,12 +133,16 @@ def load_vbo(path: str) -> Session:
     speed_unit = units.get(speed_ch, '')
     if 'kmh' in speed_ch or 'km/h' in speed_unit or 'kph' in speed_unit:
         speed_factor = 1.0
+        source_speed_unit = 'kmh'
     elif 'mph' in speed_ch or 'mph' in speed_unit:
         speed_factor = 1.60934
+        source_speed_unit = 'mph'
     elif 'm/s' in speed_unit:
         speed_factor = 3.6
+        source_speed_unit = 'ms'
     else:
         speed_factor = 1.852  # bare 'velocity' → knots
+        source_speed_unit = 'kmh'  # knots isn't a selectable display unit; default to kmh
 
     # Session date from [comments]
     comments_text = '\n'.join(sections.get('comments', []))
@@ -258,4 +262,5 @@ def load_vbo(path: str) -> Session:
         laps          = laps,
         is_bike       = False,
         csv_path      = path,
+        source_speed_unit = source_speed_unit,
     )

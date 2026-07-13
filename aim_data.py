@@ -59,6 +59,19 @@ def _find_col(columns: List[str], field: str) -> Optional[str]:
     return None
 
 
+def sniff_speed_unit(text: Optional[str]) -> str:
+    """Detect the speed unit tag ('[m/s]'/'[mph]') in a column header or CSV
+    header line. Falls back to 'kmh' (AIM's implicit default) when untagged."""
+    if not text:
+        return 'kmh'
+    low = text.lower()
+    if '[mph]' in low:
+        return 'mph'
+    if '[m/s]' in low:
+        return 'ms'
+    return 'kmh'
+
+
 def _safe(val, default: float = 0.0) -> float:
     try:
         v = float(val)
@@ -141,9 +154,10 @@ def load_csv(path: str) -> Session:
     s_rpm   = _series('rpm')
     s_exht  = _series('exhaust_temp')
 
-    # Speed unit conversion: AIM exports GPS Speed in m/s; we need km/h
+    # Speed unit conversion: AIM exports GPS Speed in m/s (untagged columns are km/h)
     speed_col = col['speed']
-    speed_factor = 3.6 if (speed_col and '[m/s]' in speed_col) else 1.0
+    source_speed_unit = sniff_speed_unit(speed_col)
+    speed_factor = {'kmh': 1.0, 'mph': 1.60934, 'ms': 3.6}[source_speed_unit]
 
     # Exhaust temp unit detection: convert °F → °C if column declares Fahrenheit
     exht_col = col['exhaust_temp']
@@ -251,4 +265,5 @@ def load_csv(path: str) -> Session:
         laps          = laps,
         is_bike       = False,
         csv_path      = path,
+        source_speed_unit = source_speed_unit,
     )

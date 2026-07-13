@@ -66,6 +66,7 @@ export function makeAPI(overrides = {}) {
       bike_overrides: {},
       overlay: { is_bike: false, theme: 'Dark', gauges: [] },
       linked_camera_folders: [],
+      speed_unit: 'auto',
     })),
     getLaps:           vi.fn(async () => []),
     scanSessions:      vi.fn(async () => []),
