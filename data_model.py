@@ -51,6 +51,9 @@ class DataPoint:
             gyro_y     = float(row['GyroY']),
             gyro_z     = float(row['GyroZ']),
             lean_angle = -float(row.get('LeanAngle', 0.0)) if is_bike else 0.0,
+            # Optional: not in stock RaceBox exports, but present on some custom
+            # RaceBox-format devices. 'or 0.0' covers missing/empty/None values.
+            rpm        = float(row.get('Rpm', row.get('rpm', 0.0)) or 0.0),
         )
 
 
