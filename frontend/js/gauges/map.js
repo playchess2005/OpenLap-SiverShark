@@ -327,7 +327,7 @@ const GaugeMap = {
         const p = toScreen(refLats[i], refLons[i]);
         refXs.push(p.x); refYs.push(p.y);
       }
-      _strokeSmooth(ctx, refXs, refYs, isClosedLoop);
+      _strokeSmooth(ctx, refXs, refYs, true);
       ctx.strokeStyle = '#cc44ff';
       ctx.lineWidth   = Math.max(2, w * 0.013);
       ctx.stroke();
