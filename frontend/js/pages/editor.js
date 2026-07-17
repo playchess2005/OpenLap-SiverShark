@@ -605,45 +605,153 @@
     _startLiveRaf();
   }
 
-  // ── Stage current lap for export ───────────────────────────────────────────
-  function _stageLapForExport() {
-    if (!_liveSession) return;
-    const lap   = _liveLaps?.[_selLapIdx];
-    const meta  = _liveSessionMeta || {};
-    const scope = State.get('exportScope') || 'selected_lap';
-    const durStr = lap?.duration != null ? _fmtLapTime(lap.duration) : '?';
-    const lapLabel = [
-      meta.track || '',
-      `Lap ${_selLapIdx + 1}${lap?.is_best ? ' ★' : ''}`,
-      durStr,
-    ].filter(Boolean).join(' — ');
+  // ── Export menu: scope / padding / overlay-only, set once per session ──────
+  // (the export scope decision lives here, not on the Export tab — Export is
+  // purely a queue + progress monitor; see _exportNow / _addCurrentToQueue)
+  let _expScope          = 'selected_lap';
+  let _expPadding        = 5.0;
+  let _expOverlayOnly    = false;
+  let _expRangeStart     = null;
+  let _expRangeEnd       = null;
+  let _expRangeSessionKey = null;  // csv_path the range picker's laps belong to
+
+  function _timedLaps() {
+    return (_liveLaps || []).filter(l => !l.is_outlap && !l.is_inlap);
+  }
+
+  function _resetRangePickerIfNewSession() {
+    const key = _liveSession?.csv_path || null;
+    if (key !== _expRangeSessionKey) {
+      _expRangeSessionKey = key;
+      _expRangeStart = null;
+      _expRangeEnd   = null;
+    }
+    const laps = _timedLaps();
+    if (_expRangeStart == null && laps.length) {
+      _expRangeStart = laps[0].lap_num;
+      _expRangeEnd   = laps[laps.length - 1].lap_num;
+    }
+  }
+
+  function _renderRangeList(panel) {
+    const hdr  = panel.querySelector('#exp-range-hdr');
+    const list = panel.querySelector('#exp-range-list');
+    if (!list) return;
+    const laps = _timedLaps();
+
+    if (!laps.length) {
+      list.innerHTML = '<div style="padding:8px;font-size:10px;color:var(--text3)">No timed laps found.</div>';
+      if (hdr) hdr.textContent = 'No timed laps found.';
+      return;
+    }
+
+    const s = _expRangeStart, e = _expRangeEnd;
+    if (hdr) {
+      hdr.textContent = (s != null && e != null)
+        ? `Range: Lap ${s} → Lap ${e}`
+        : 'Click a lap to set start, click another to set end.';
+    }
+
+    list.innerHTML = laps.map(lap => {
+      const isEdge  = lap.lap_num === s || lap.lap_num === e;
+      const inRange = s != null && e != null && lap.lap_num >= s && lap.lap_num <= e;
+      const bg    = isEdge ? 'var(--acc)' : (inRange ? 'rgba(79,142,247,0.15)' : 'transparent');
+      const color = isEdge ? '#fff' : 'inherit';
+      return `<div class="exp-range-row" data-num="${lap.lap_num}"
+                   style="display:flex;justify-content:space-between;padding:4px 8px;cursor:pointer;
+                          font-size:10px;background:${bg};color:${color};border-bottom:1px solid var(--border);">
+                <span>Lap ${lap.lap_num}${lap.is_best ? ' ★' : ''}</span><span>${_fmtLapTime(lap.duration)}</span>
+              </div>`;
+    }).join('');
+
+    list.querySelectorAll('.exp-range-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const num = parseInt(row.dataset.num);
+        if (_expRangeStart == null || (_expRangeStart != null && _expRangeEnd != null)) {
+          _expRangeStart = num; _expRangeEnd = null;
+        } else if (num >= _expRangeStart) {
+          _expRangeEnd = num;
+        } else {
+          _expRangeStart = num; _expRangeEnd = null;
+        }
+        _renderRangeList(panel);
+      });
+    });
+  }
+
+  function _queueItemKey(item) {
+    if (item.scope === 'lap_range') return `${item.csv_path}::lap_range::${item.lap_range_start}-${item.lap_range_end}`;
+    if (item.scope === 'selected_lap' || !item.scope) return `${item.csv_path}::selected_lap::${item.lap_idx}`;
+    return `${item.csv_path}::${item.scope}`;
+  }
+
+  // Builds a queue item from the current session using whatever scope/padding/
+  // overlay-only is currently set in the export menu, and adds it to the queue
+  // (deduped so re-clicking with the same scope doesn't create duplicates).
+  // Display text for the queue (Export tab) is derived from scope/lap_idx/
+  // duration at render time there — not stored as a pre-built label here.
+  function _addCurrentToQueue() {
+    if (!_liveSession) return null;
+    const lap  = _liveLaps?.[_selLapIdx];
+    const meta = _liveSessionMeta || {};
+
+    if (_expScope === 'lap_range') _resetRangePickerIfNewSession();
 
     const item = {
-      csv_path:    _liveSession.csv_path,
-      lap_idx:     _selLapIdx,
-      video_paths: _liveSession.video_paths || [],
-      sync_offset: _liveSession.sync_offset ?? 0,
-      source:      _liveSession.source || '',
-      duration:    lap?.duration ?? null,
-      is_best:     lap?.is_best ?? false,
-      track:       meta.track || '',
-      csv_start:   _liveSession.csv_start || null,
-      lap_label:   lapLabel,
-      scope,
+      csv_path:     _liveSession.csv_path,
+      lap_idx:      _selLapIdx,
+      video_paths:  _liveSession.video_paths || [],
+      sync_offset:  _liveSession.sync_offset ?? 0,
+      source:       _liveSession.source || '',
+      duration:     lap?.duration ?? null,
+      is_best:      lap?.is_best ?? false,
+      track:        meta.track || '',
+      csv_start:    _liveSession.csv_start || null,
+      scope:        _expScope,
+      padding:      _expPadding,
+      overlay_only: _expOverlayOnly,
     };
-    const current = State.get('selectedItems') || [];
-    // Avoid duplicates
-    const exists = current.some(x => x.csv_path === item.csv_path && x.lap_idx === item.lap_idx);
-    if (!exists) State.set('selectedItems', [...current, item]);
+    if (_expScope === 'lap_range') {
+      item.lap_range_start = _expRangeStart;
+      item.lap_range_end   = _expRangeEnd;
+    }
 
-    // Brief visual feedback on button
-    const btn = _container?.querySelector('#stage-export-btn');
+    const current = State.get('selectedItems') || [];
+    const key     = _queueItemKey(item);
+    const exists  = current.some(x => _queueItemKey(x) === key);
+    if (!exists) State.set('selectedItems', [...current, item]);
+    return item;
+  }
+
+  // "+ Add to Queue": stays on this page so other sessions can be queued too.
+  function _queueCurrentLap() {
+    _addCurrentToQueue();
+
+    const btn = _container?.querySelector('#exp-queue-btn');
     if (btn) {
       const orig = btn.textContent;
       btn.textContent = '✓ Added';
       btn.disabled = true;
-      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1500);
+      setTimeout(() => { if (btn.isConnected) { btn.textContent = orig; btn.disabled = false; } }, 1500);
     }
+  }
+
+  // "▶ Export Now": queues the current session, then immediately starts
+  // exporting everything in the queue and jumps to the Export tab to watch.
+  async function _exportNow() {
+    _addCurrentToQueue();
+    const items = State.get('selectedItems') || [];
+    if (!items.length) return;
+
+    const btn = _container?.querySelector('#exp-now-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+    try {
+      const params = ExportParams.buildExportParams({ items, cfg: _appConfig, layout: _layout });
+      await API.startExport(params);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '▶ Export Now'; }
+    }
+    Router.navigate('export');
   }
 
   // ── Load full session (metadata + laps + first lap telemetry) ──────────────
@@ -1736,17 +1844,6 @@
                     style="padding:2px 8px;" disabled>▶</button>
           </div>
 
-          <select id="overlay-scope" title="Export scope"
-                  style="font-size:10px;flex-shrink:0;min-width:90px;">
-            <option value="selected_lap">This lap</option>
-            <option value="fastest">Fastest</option>
-            <option value="all_laps">All laps</option>
-            <option value="full">Full session</option>
-          </select>
-          <button class="btn btn-sm" id="stage-export-btn"
-                  title="Add this lap to the export queue"
-                  style="flex-shrink:0;border-color:var(--ok);color:var(--ok);">+ Export</button>
-
           <div style="flex:1"></div>
           <label style="font-size:10px; color:var(--text2)">Theme</label>
           <select id="theme-select" style="font-size:10px;">
@@ -1761,6 +1858,45 @@
           </select>
           <button class="btn btn-sm" id="save-preset-btn">Save As…</button>
           <button class="btn btn-sm btn-accent" id="save-layout-btn">Save</button>
+        </div>
+
+        <!-- Export bar — always visible: this is the one place scope/padding/
+             overlay-only are set, and the only way an export gets started. -->
+        <div style="padding:6px 16px; border-bottom:1px solid var(--border);
+                    display:flex; align-items:center; gap:10px; flex-wrap:wrap; flex-shrink:0;
+                    background:var(--bg);">
+          <span style="font-size:9px;font-weight:700;color:var(--text2);
+                       text-transform:uppercase;letter-spacing:0.05em;flex-shrink:0;">Export</span>
+          <select id="exp-scope-sel" style="font-size:10px;flex-shrink:0;">
+            <option value="selected_lap">This lap</option>
+            <option value="lap_range">Lap range</option>
+            <option value="fastest">Fastest lap</option>
+            <option value="all_laps">All laps</option>
+            <option value="full">Full session</option>
+          </select>
+          <label style="font-size:10px;color:var(--text2);display:flex;align-items:center;gap:4px;flex-shrink:0;">
+            Padding
+            <input type="number" id="exp-padding-inp" class="input-field input-narrow"
+                   value="5" min="0" max="60" step="0.5" style="width:56px;">
+            s
+          </label>
+          <label style="font-size:10px;color:var(--text2);display:flex;align-items:center;gap:4px;flex-shrink:0;cursor:pointer;">
+            <input type="checkbox" id="exp-overlay-only-chk"
+                   title="Export a transparent ProRes 4444 overlay — drop it over your source clip in DaVinci Resolve, Premiere or Final Cut.">
+            Overlay only (.mov)
+          </label>
+          <div style="flex:1"></div>
+          <button class="btn btn-sm" id="exp-queue-btn" style="flex-shrink:0;">+ Add to Queue</button>
+          <button class="btn btn-sm btn-accent" id="exp-now-btn" style="flex-shrink:0;">▶ Export Now</button>
+        </div>
+
+        <!-- Lap range picker — only shown once "Lap range" scope is selected -->
+        <div id="exp-range-wrap" style="display:none;padding:6px 16px;border-bottom:1px solid var(--border);
+             flex-shrink:0;background:var(--bg);max-height:140px;overflow-y:auto;">
+          <div id="exp-range-hdr" style="font-size:9px;color:var(--text3);font-style:italic;margin-bottom:4px;">
+            Click a lap to set start, click another to set end.
+          </div>
+          <div id="exp-range-list" style="border:1px solid var(--border);border-radius:3px;background:var(--sidebar);"></div>
         </div>
 
         <!-- Main content row -->
@@ -1984,15 +2120,42 @@
       switchLap(_selLapIdx + 1);
     });
 
-    // Scope selector → persist in State so Export tab reads it
-    const scopeSel = container.querySelector('#overlay-scope');
-    if (scopeSel) {
-      scopeSel.value = State.get('exportScope') || 'selected_lap';
-      scopeSel.addEventListener('change', e => State.set('exportScope', e.target.value));
+    // Export bar (scope / padding / overlay-only + queue/export actions) —
+    // always visible, not tucked behind a menu (this is the only place these
+    // settings live, and the only way an export gets started).
+    const expScopeSel   = container.querySelector('#exp-scope-sel');
+    const expRangeWrap  = container.querySelector('#exp-range-wrap');
+    const expPaddingInp = container.querySelector('#exp-padding-inp');
+    const expOverlayChk = container.querySelector('#exp-overlay-only-chk');
+
+    if (expScopeSel)   expScopeSel.value = _expScope;
+    if (expPaddingInp) expPaddingInp.value = _expPadding;
+    if (expOverlayChk) expOverlayChk.checked = _expOverlayOnly;
+    if (expRangeWrap)  expRangeWrap.style.display = (_expScope === 'lap_range') ? '' : 'none';
+    if (_expScope === 'lap_range') {
+      _resetRangePickerIfNewSession();
+      _renderRangeList(container);
     }
 
-    // Stage for export
-    container.querySelector('#stage-export-btn')?.addEventListener('click', _stageLapForExport);
+    expScopeSel?.addEventListener('change', e => {
+      _expScope = e.target.value;
+      if (expRangeWrap) expRangeWrap.style.display = (_expScope === 'lap_range') ? '' : 'none';
+      if (_expScope === 'lap_range') {
+        _resetRangePickerIfNewSession();
+        _renderRangeList(container);
+      }
+    });
+
+    expPaddingInp?.addEventListener('change', e => {
+      _expPadding = parseFloat(e.target.value) || 0;
+    });
+
+    expOverlayChk?.addEventListener('change', e => {
+      _expOverlayOnly = e.target.checked;
+    });
+
+    container.querySelector('#exp-queue-btn')?.addEventListener('click', _queueCurrentLap);
+    container.querySelector('#exp-now-btn')?.addEventListener('click', _exportNow);
 
     _resizeObserver = new ResizeObserver(() => rebuildGaugeCanvases());
     const area = container.querySelector('#preview-area');

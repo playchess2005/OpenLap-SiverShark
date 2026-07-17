@@ -27,6 +27,7 @@
         <li class="nav-item" data-page="export">
           <span class="nav-icon">🎬</span>
           <span class="nav-label">Export</span>
+          <span id="nav-badge-export" class="nav-badge hidden">0</span>
         </li>
         <li class="nav-item" data-page="settings">
           <span class="nav-icon">⚙️</span>
@@ -42,6 +43,7 @@
   <script src="js/state.js"></script>
   <script src="js/api.js"></script>
   <script src="js/router.js"></script>
+  <script src="js/export_params.js"></script>
 
   <!-- Gauge renderers (must load before editor.js) -->
   <script src="js/gauges/base.js"></script>
@@ -74,6 +76,15 @@
     if (typeof window.pywebview === 'undefined') {
       Router.init();
     }
+
+    // Keep the Export nav item's queue-count badge in sync from any page
+    State.on('selectedItems', items => {
+      const badge = document.getElementById('nav-badge-export');
+      if (!badge) return;
+      const count = items?.length || 0;
+      badge.textContent = String(count);
+      badge.classList.toggle('hidden', count === 0);
+    });
   </script>
 </body>
 </html>

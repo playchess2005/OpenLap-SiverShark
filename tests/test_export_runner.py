@@ -206,3 +206,57 @@ class TestProgressRange:
         """load_any_session must be importable from export_runner for use by other modules."""
         from export_runner import load_any_session
         assert callable(load_any_session)
+
+
+# ── Cancellation ────────────────────────────────────────────────────────────────
+
+class TestCancellation:
+    """
+    run_export must stop processing further queued items once is_cancelled()
+    starts returning True — previously the cancel flag set by the UI's Cancel
+    button was never read anywhere, so an in-progress export could not be
+    stopped once started.
+    """
+
+    def test_stops_before_next_item_once_cancelled(self):
+        """Only the first item is processed; is_cancelled() flips True after it."""
+        calls = {'n': 0}
+
+        def fake_cancelled():
+            # False for the first check (before item 1), True from then on —
+            # simulates the user clicking Cancel while item 1 is rendering.
+            calls['n'] += 1
+            return calls['n'] > 1
+
+        log_cb, progress_cb, done_cb = _run(
+            items=[
+                {'csv_path': '/nonexistent/a.csv', 'video_paths': [], 'sync_offset': 0.0},
+                {'csv_path': '/nonexistent/b.csv', 'video_paths': [], 'sync_offset': 0.0},
+                {'csv_path': '/nonexistent/c.csv', 'video_paths': [], 'sync_offset': 0.0},
+            ],
+            is_cancelled=fake_cancelled,
+        )
+
+        logged = ' '.join(str(c) for c in log_cb.call_args_list)
+        assert 'a.csv' in logged
+        assert 'b.csv' not in logged
+        assert 'c.csv' not in logged
+        done_cb.assert_called_once()
+        ok, msg = done_cb.call_args[0]
+        assert ok is False
+        assert 'cancel' in msg.lower()
+
+    def test_never_cancelled_runs_all_items(self):
+        """is_cancelled always False (or omitted) must not affect normal completion."""
+        log_cb, progress_cb, done_cb = _run(
+            items=[
+                {'csv_path': '/nonexistent/a.csv', 'video_paths': [], 'sync_offset': 0.0},
+                {'csv_path': '/nonexistent/b.csv', 'video_paths': [], 'sync_offset': 0.0},
+            ],
+            is_cancelled=lambda: False,
+        )
+        logged = ' '.join(str(c) for c in log_cb.call_args_list)
+        assert 'a.csv' in logged
+        assert 'b.csv' in logged
+        ok, msg = done_cb.call_args[0]
+        assert 'cancel' not in msg.lower()

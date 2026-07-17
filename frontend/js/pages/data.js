@@ -334,6 +334,19 @@
   </div>
 </div>
 
+<!-- Primary actions: visible up top, no scrolling needed -->
+<div style="display:flex; gap:6px; flex-shrink:0;">
+  <button class="btn btn-accent" id="dr-goto-overlay"
+          style="flex:1; padding:9px; font-size:11px; font-weight:600; border-radius:var(--radius);">
+    Open in Overlay →
+  </button>
+  <button class="btn btn-secondary" id="dr-queue-export"
+          title="Queue this session's best lap for export without opening the overlay editor"
+          style="flex-shrink:0; padding:9px 12px; font-size:11px; font-weight:600; border-radius:var(--radius); white-space:nowrap;">
+    + Queue for Export
+  </button>
+</div>
+
 <!-- AIM conversion -->
 ${s.needs_conversion ? `
 <div class="dr-card" id="dr-conv-card">
@@ -355,12 +368,6 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
     <span id="dr-assign-vid-msg" class="status-msg"></span>
   </div>
 </div>`}
-
-<!-- Primary CTA: Open in Overlay -->
-<button class="btn btn-accent" id="dr-goto-overlay"
-        style="width:100%; padding:9px; font-size:11px; font-weight:600; border-radius:var(--radius); flex-shrink:0; margin-top:auto;">
-  Open in Overlay →
-</button>
 `;
 
     wirePropPanel(s, pane);
@@ -525,6 +532,42 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
         csv_start:   s.csv_start  || null,
       });
       Router.navigate('editor');
+    });
+
+    // Queue for Export (skip the Overlay editor for the common case where
+    // the gauge layout is already the way the user wants it)
+    pane.querySelector('#dr-queue-export')?.addEventListener('click', () => {
+      const laps = _lapDetails[s.csv_path] || [];
+      const lap  = laps.find(l => l.is_best) || laps[0];
+      const lapIdx = lap ? lap.lap_idx : 0;
+      const trackOverride = _config?.session_info?.[s.csv_path]?.info_track;
+      const track = trackOverride || _meta[s.csv_path]?.track || '';
+
+      const item = {
+        csv_path:     s.csv_path,
+        lap_idx:      lapIdx,
+        video_paths:  s.video_paths || [],
+        sync_offset:  s.sync_offset ?? 0,
+        source:       s.source || '',
+        duration:     lap?.duration ?? null,
+        is_best:      lap?.is_best ?? false,
+        track,
+        csv_start:    s.csv_start || null,
+        scope:        'selected_lap',
+        padding:      5.0,
+        overlay_only: false,
+      };
+      const current = State.get('selectedItems') || [];
+      const exists  = current.some(x => x.csv_path === item.csv_path && x.lap_idx === item.lap_idx);
+      if (!exists) State.set('selectedItems', [...current, item]);
+
+      const btn = pane.querySelector('#dr-queue-export');
+      if (btn) {
+        const orig = btn.textContent;
+        btn.textContent = '✓ Queued';
+        btn.disabled = true;
+        setTimeout(() => { if (btn.isConnected) { btn.textContent = orig; btn.disabled = false; } }, 1500);
+      }
     });
 
     // AIM XRK conversion

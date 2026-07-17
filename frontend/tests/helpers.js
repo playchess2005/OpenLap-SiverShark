@@ -48,6 +48,19 @@ export function loadGaugeBase() {
 }
 
 /**
+ * Load export_params.js and pin ExportParams to globalThis.
+ * Like gauges/base.js, it defines a top-level `const ExportParams = {...}`
+ * with no IIFE wrapper. Page modules (editor.js) reference `ExportParams` as
+ * a free/global variable, the same way they reference State/API/Router — so
+ * unlike loadGaugeBase() (whose return value callers use directly), this one
+ * must be pinned to globalThis for page IIFEs loaded afterwards to see it.
+ */
+export function loadExportParams() {
+  const code = readFileSync(resolve(JS_ROOT, 'export_params.js'), 'utf8');
+  globalThis.ExportParams = new Function(`${code}; return ExportParams;`)();
+}
+
+/**
  * Minimal CanvasRenderingContext2D stand-in for testing font-fit logic.
  * jsdom does not implement real text metrics, so measureText() here
  * approximates width from the font-size number embedded in ctx.font

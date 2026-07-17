@@ -1006,6 +1006,7 @@ class WebviewAPI:
                 overlay_only          = params.get('overlay_only', False),
                 track_map_selections  = getattr(self._config, 'track_map_selections', {}) or {},
                 speed_unit_pref       = params.get('speed_unit', 'auto'),
+                is_cancelled          = self._export_cancel.is_set,
             )
         except Exception as e:
             done_cb(False, str(e))

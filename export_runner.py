@@ -65,6 +65,7 @@ def run_export(
     ref_lap_num:          int  = 0,
     track_map_selections: dict = None,
     speed_unit_pref:      str  = 'auto',
+    is_cancelled:         Optional[Callable[[], bool]] = None,
 ) -> None:
     """Render one or more sessions.  Designed to be called from a background thread."""
     from video_renderer import render_lap, RenderJob, concat_videos
@@ -89,15 +90,27 @@ def run_export(
         within = join_share * sess_w + (render_pct / 100) * (1 - join_share) * sess_w
         progress_cb(base + within, msg)
 
-    errors = []
+    errors    = []
+    cancelled = False
 
     for item in items:
+        if is_cancelled and is_cancelled():
+            cancelled = True
+            log("\nExport cancelled.")
+            break
+
         # Accept both the webview field names (csv_path / video_paths / sync_offset)
         # and the legacy Tkinter names (csv / videos / offset).
         csv_path = item.get('csv_path') or item.get('csv')
         videos   = item.get('video_paths') or item.get('videos') or []
         offset   = item.get('sync_offset') if item.get('sync_offset') is not None \
                    else (item.get('offset') or 0.0)
+
+        # Per-item overrides (set once, at queue time, from the Overlay tab) —
+        # fall back to the call-level defaults only for items that predate this.
+        item_scope        = item.get('scope') or scope
+        item_padding       = item.get('padding') if item.get('padding') is not None else padding
+        item_overlay_only  = item.get('overlay_only') if item.get('overlay_only') is not None else overlay_only
 
         if not csv_path or not os.path.exists(csv_path):
             log(f"Skipping: CSV not found: {csv_path}")
@@ -129,12 +142,12 @@ def run_export(
                     pt.lean_angle = compute_lean_angle(
                         pt.speed, pt.gyro_z, pt.gforce_y)
 
-        if not videos and (scope != 'full' or overlay_only):
+        if not videos and (item_scope != 'full' or item_overlay_only):
             log("  ✗ No video file — skipping")
             done_jobs += 1
             continue
 
-        _ext = '.mov' if overlay_only else '.mp4'
+        _ext = '.mov' if item_overlay_only else '.mp4'
 
         # ── Join phase ────────────────────────────────────────────────────────
         video_path = videos[0] if videos else None
@@ -212,9 +225,6 @@ def run_export(
         def scaled_prog(pct, msg):
             sess_prog(done_jobs, join_share, pct, msg)
 
-        # Allow per-item scope override (set from the Overlay tab)
-        item_scope = item.get('scope') or scope
-
         def _ref_for_lap(lap_num: Optional[int] = None):
             """Return the reference lap for a given lap number (handles session_best_so_far)."""
             if ref_mode == 'session_best_so_far':
@@ -246,12 +256,12 @@ def run_export(
                     video_path, out, sess, RenderJob(_export_stem(sess, label), lap),
                     sync_offset=offset, encoder=encoder, crf=crf,
                     n_workers=workers, show_map=show_map,
-                    show_telemetry=show_tel, padding=padding,
+                    show_telemetry=show_tel, padding=item_padding,
                     is_bike=is_bike, overlay_layout=layout,
                     progress_cb=scaled_prog, log_cb=log,
                     reference_lap=_ref_for_lap(lap.lap_num),
                     info_overrides=info_overrides,
-                    overlay_only=overlay_only,
+                    overlay_only=item_overlay_only,
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
                     speed_unit=resolved_speed_unit,
@@ -269,12 +279,12 @@ def run_export(
                     video_path, out, sess, RenderJob(_export_stem(sess, 'Fastest'), lap),
                     sync_offset=offset, encoder=encoder, crf=crf,
                     n_workers=workers, show_map=show_map,
-                    show_telemetry=show_tel, padding=padding,
+                    show_telemetry=show_tel, padding=item_padding,
                     is_bike=is_bike, overlay_layout=layout,
                     progress_cb=scaled_prog, log_cb=log,
                     reference_lap=_ref_for_lap(lap.lap_num),
                     info_overrides=info_overrides,
-                    overlay_only=overlay_only,
+                    overlay_only=item_overlay_only,
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
                     speed_unit=resolved_speed_unit,
@@ -287,6 +297,10 @@ def run_export(
                     done_jobs += 1
                     continue
                 for i, lap in enumerate(laps, 1):
+                    if is_cancelled and is_cancelled():
+                        cancelled = True
+                        log(f"  Cancelled mid-session (after lap {i - 1}/{len(laps)}).")
+                        break
                     label = f"Lap{i:02d}"
                     out = os.path.join(export_path, f"{_export_stem(sess, label)}{_ext}")
                     log(f"  Lap {i}/{len(laps)}: {lap.duration:.3f}s")
@@ -294,12 +308,12 @@ def run_export(
                         video_path, out, sess, RenderJob(_export_stem(sess, label), lap),
                         sync_offset=offset, encoder=encoder, crf=crf,
                         n_workers=workers, show_map=show_map,
-                        show_telemetry=show_tel, padding=padding,
+                        show_telemetry=show_tel, padding=item_padding,
                         is_bike=is_bike, overlay_layout=layout,
                         progress_cb=scaled_prog, log_cb=log,
                         reference_lap=_ref_for_lap(lap.lap_num),
                         info_overrides=info_overrides,
-                        overlay_only=overlay_only,
+                        overlay_only=item_overlay_only,
                         track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
                     speed_unit=resolved_speed_unit,
@@ -338,12 +352,12 @@ def run_export(
                     video_path, out, sess, RenderJob(label, range_lap),
                     sync_offset=offset, encoder=encoder, crf=crf,
                     n_workers=workers, show_map=show_map,
-                    show_telemetry=show_tel, padding=padding,
+                    show_telemetry=show_tel, padding=item_padding,
                     is_bike=is_bike, overlay_layout=layout,
                     progress_cb=scaled_prog, log_cb=log,
                     reference_lap=_ref_for_lap(included[0].lap_num),
                     info_overrides=info_overrides,
-                    overlay_only=overlay_only,
+                    overlay_only=item_overlay_only,
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
                     speed_unit=resolved_speed_unit,
@@ -361,7 +375,7 @@ def run_export(
                     progress_cb=scaled_prog, log_cb=log,
                     reference_lap=static_ref_lap,
                     info_overrides=info_overrides,
-                    overlay_only=overlay_only,
+                    overlay_only=item_overlay_only,
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
                     speed_unit=resolved_speed_unit,
@@ -392,12 +406,12 @@ def run_export(
                     video_path or '', out, sess, RenderJob(_export_stem(sess, tag), clip_lap),
                     sync_offset=offset, encoder=encoder, crf=crf,
                     n_workers=workers, show_map=show_map,
-                    show_telemetry=show_tel, padding=padding,
+                    show_telemetry=show_tel, padding=item_padding,
                     is_bike=is_bike, overlay_layout=layout,
                     reference_lap=static_ref_lap,
                     progress_cb=scaled_prog, log_cb=log,
                     info_overrides=info_overrides,
-                    overlay_only=overlay_only,
+                    overlay_only=item_overlay_only,
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
                     speed_unit=resolved_speed_unit,
@@ -412,7 +426,12 @@ def run_export(
         done_jobs += 1
         sess_prog(done_jobs, 0, 0, "")
 
-    if errors:
+        if cancelled:
+            break
+
+    if cancelled:
+        done_cb(False, f"Cancelled — {done_jobs} of {total_jobs} exported")
+    elif errors:
         done_cb(False, f"{len(errors)} error(s) — see log")
     else:
         done_cb(True, f"Done — {done_jobs} session(s) exported")

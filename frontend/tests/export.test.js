@@ -5,6 +5,10 @@
  * State.previewSession (set by the Data page when the user clicks
  * "Open in Overlay").  Without this wiring the Queued Laps count
  * would always show 0 even though the user selected a session.
+ *
+ * The Export page has no scope/padding/Start Export controls of its own —
+ * those live on the Overlay tab (editor.js) and travel with each queued item.
+ * See export_params.test.js for the params-building logic that page uses.
  */
 import {
   loadState, loadPage, makeRouter, makeAPI,
@@ -125,22 +129,6 @@ describe('Export page — previewSession → selectedItems wiring', () => {
     expect(badge?.textContent).toBe('0');
   });
 
-  test('Start Export button is enabled when previewSession provides an item', async () => {
-    State.set('previewSession', PREVIEW);
-    await page.mount(container);
-
-    const btn = container.querySelector('#exp-start-btn');
-    expect(btn?.disabled).toBe(false);
-  });
-
-  test('Start Export button is disabled when no item is queued', async () => {
-    State.set('previewSession', null);
-    await page.mount(container);
-
-    const btn = container.querySelector('#exp-start-btn');
-    expect(btn?.disabled).toBe(true);
-  });
-
   test('item row is rendered with session filename', async () => {
     State.set('previewSession', PREVIEW);
     await page.mount(container);
@@ -149,55 +137,14 @@ describe('Export page — previewSession → selectedItems wiring', () => {
     expect(list?.textContent).toContain('session.csv');
   });
 
-  // ── Start Export params ────────────────────────────────────────────────────
+  test('empty queue shows a "Go to Data" button that navigates there', async () => {
+    State.set('previewSession', null);
+    await page.mount(container);
 
-  test('_startExport fetches overlay layout and includes it in params', async () => {
-    const fakeLayout = { is_bike: false, theme: 'Dark', gauges: [{ channel: 'speed' }] };
-    globalThis.API = makeAPI({
-      getOverlay: vi.fn(async () => fakeLayout),
-      startExport: vi.fn(async () => null),
-    });
-    // Reload the page with the new API mock
-    const freshRouter = makeRouter();
-    globalThis.Router = freshRouter;
-    loadPage('pages/export.js');
-    const freshPage = freshRouter.getPage('export');
-    const freshContainer = makeContainer();
-
-    State.set('previewSession', PREVIEW);
-    await freshPage.mount(freshContainer);
-
-    freshContainer.querySelector('#exp-start-btn').click();
-    await flushAsync();
-
-    expect(globalThis.API.getOverlay).toHaveBeenCalled();
-    const [params] = globalThis.API.startExport.mock.calls[0];
-    expect(params.layout).toEqual(fakeLayout);
-
-    freshPage.unmount();
-    cleanupContainer(freshContainer);
-  });
-
-  test('scope "All selected laps" sends all_laps to the backend', async () => {
-    const startExport = vi.fn(async () => null);
-    globalThis.API = makeAPI({ startExport, getOverlay: vi.fn(async () => ({})) });
-    const freshRouter = makeRouter();
-    globalThis.Router = freshRouter;
-    loadPage('pages/export.js');
-    const freshPage = freshRouter.getPage('export');
-    const freshContainer = makeContainer();
-
-    State.set('previewSession', PREVIEW);
-    await freshPage.mount(freshContainer);
-
-    freshContainer.querySelector('#exp-scope').value = 'all_laps';
-    freshContainer.querySelector('#exp-start-btn').click();
-    await flushAsync();
-
-    expect(startExport.mock.calls[0][0].scope).toBe('all_laps');
-
-    freshPage.unmount();
-    cleanupContainer(freshContainer);
+    const btn = container.querySelector('#exp-goto-data-btn');
+    expect(btn).not.toBeNull();
+    btn.click();
+    expect(router.navigate).toHaveBeenCalledWith('data');
   });
 
   // ── Progress bar ──────────────────────────────────────────────────────────
@@ -237,113 +184,26 @@ describe('Export page — previewSession → selectedItems wiring', () => {
     cleanupContainer(freshContainer);
   });
 
-  // ── Scope options ─────────────────────────────────────────────────────────
+  test('first progress event flips the status badge from Idle to Running', async () => {
+    const onCalls = [];
+    const trackingAPI = makeAPI({ on: vi.fn((event, cb) => { onCalls.push({ event, cb }); return () => {}; }) });
+    globalThis.API = trackingAPI;
+    const freshRouter = makeRouter();
+    globalThis.Router = freshRouter;
+    loadPage('pages/export.js');
+    const freshPage = freshRouter.getPage('export');
+    const freshContainer = makeContainer();
 
-  test('scope dropdown includes "full" option', async () => {
     State.set('previewSession', null);
-    await page.mount(container);
-
-    const scopeSel = container.querySelector('#exp-scope');
-    const values = Array.from(scopeSel?.options ?? []).map(o => o.value);
-    expect(values).toContain('full');
-  });
-
-  // ── ref_mode passthrough ──────────────────────────────────────────────────
-  // ref_mode is now stored in the overlay layout (editor page), not on the
-  // Export page.  _startExport reads it from API.getOverlay().
-
-  test('ref_mode from overlay is forwarded to startExport', async () => {
-    const startExport = vi.fn(async () => null);
-    globalThis.API = makeAPI({
-      startExport,
-      getOverlay: vi.fn(async () => ({ ref_mode: 'session_best' })),
-    });
-    const freshRouter = makeRouter();
-    globalThis.Router = freshRouter;
-    loadPage('pages/export.js');
-    const freshPage = freshRouter.getPage('export');
-    const freshContainer = makeContainer();
-
-    State.set('previewSession', PREVIEW);
     await freshPage.mount(freshContainer);
 
-    freshContainer.querySelector('#exp-start-btn').click();
-    await flushAsync();
+    const progressCb = onCalls.find(c => c.event === 'export_progress')?.cb;
+    const badge = freshContainer.querySelector('#exp-status-badge');
+    expect(badge?.textContent).toBe('Idle');
 
-    expect(startExport.mock.calls[0][0].ref_mode).toBe('session_best');
-
-    freshPage.unmount();
-    cleanupContainer(freshContainer);
-  });
-
-  // ── speed_unit passthrough ─────────────────────────────────────────────────
-
-  test('speed_unit from config is forwarded to startExport', async () => {
-    const startExport = vi.fn(async () => null);
-    globalThis.API = makeAPI({
-      startExport,
-      getOverlay: vi.fn(async () => ({})),
-      getConfig:  vi.fn(async () => ({ speed_unit: 'mph' })),
-    });
-    const freshRouter = makeRouter();
-    globalThis.Router = freshRouter;
-    loadPage('pages/export.js');
-    const freshPage = freshRouter.getPage('export');
-    const freshContainer = makeContainer();
-
-    State.set('previewSession', PREVIEW);
-    await freshPage.mount(freshContainer);
-
-    freshContainer.querySelector('#exp-start-btn').click();
-    await flushAsync();
-
-    expect(startExport.mock.calls[0][0].speed_unit).toBe('mph');
-
-    freshPage.unmount();
-    cleanupContainer(freshContainer);
-  });
-
-  test('speed_unit defaults to "auto" when config has no speed_unit', async () => {
-    const startExport = vi.fn(async () => null);
-    globalThis.API = makeAPI({
-      startExport,
-      getOverlay: vi.fn(async () => ({})),
-      getConfig:  vi.fn(async () => ({})),
-    });
-    const freshRouter = makeRouter();
-    globalThis.Router = freshRouter;
-    loadPage('pages/export.js');
-    const freshPage = freshRouter.getPage('export');
-    const freshContainer = makeContainer();
-
-    State.set('previewSession', PREVIEW);
-    await freshPage.mount(freshContainer);
-
-    freshContainer.querySelector('#exp-start-btn').click();
-    await flushAsync();
-
-    expect(startExport.mock.calls[0][0].speed_unit).toBe('auto');
-
-    freshPage.unmount();
-    cleanupContainer(freshContainer);
-  });
-
-  test('ref_mode defaults to "none" when overlay has no ref_mode', async () => {
-    const startExport = vi.fn(async () => null);
-    globalThis.API = makeAPI({ startExport, getOverlay: vi.fn(async () => ({})) });
-    const freshRouter = makeRouter();
-    globalThis.Router = freshRouter;
-    loadPage('pages/export.js');
-    const freshPage = freshRouter.getPage('export');
-    const freshContainer = makeContainer();
-
-    State.set('previewSession', PREVIEW);
-    await freshPage.mount(freshContainer);
-
-    freshContainer.querySelector('#exp-start-btn').click();
-    await flushAsync();
-
-    expect(startExport.mock.calls[0][0].ref_mode).toBe('none');
+    progressCb({ value: 10, message: 'Rendering…' });
+    expect(badge?.textContent).toBe('Running');
+    expect(freshContainer.querySelector('#exp-cancel-btn')?.classList.contains('hidden')).toBe(false);
 
     freshPage.unmount();
     cleanupContainer(freshContainer);
