@@ -48,6 +48,16 @@ const GaugeMap = {
     const osmLats  = data.track_map_lats  || [];
     const osmLons  = data.track_map_lons  || [];
     const osmAreas = data.track_map_areas || [];
+	
+	  // 1. Extracts first and last elements from array of coordinates
+    const startLat = lats[0];
+    const startLon = lons[0];
+    const endLat   = lats[lats.length - 1];
+    const endLon   = lons[lons.length - 1];
+
+    // 2. Calculates the aproximate mathematical distance from start to end
+    // Id distance less than small limit (eg: 0.0005 degrees), then the track is a closed circuit.
+    const isClosedLoop = Math.sqrt(Math.pow(endLat - startLat, 2) + Math.pow(endLon - startLon, 2)) < 0.0005;
 
     if (lats.length < 2 || lons.length < 2) {
       ctx.fillStyle    = theme.label || '#4e6578';
@@ -138,13 +148,13 @@ const GaugeMap = {
     // Full track outline (outer) — smoothed closed circuit
     ctx.lineCap  = 'round';
     ctx.lineJoin = 'round';
-    _strokeSmooth(ctx, gpsXs, gpsYs, true);
+    _strokeSmooth(ctx, gpsXs, gpsYs, isClosedLoop);
     ctx.strokeStyle = theme.map_track_outer || '#1a2a3a';
     ctx.lineWidth   = Math.max(4, w * 0.03);
     ctx.stroke();
 
     // Full track inner
-    _strokeSmooth(ctx, gpsXs, gpsYs, true);
+    _strokeSmooth(ctx, gpsXs, gpsYs, isClosedLoop);
     ctx.strokeStyle = theme.map_track_inner || '#2255aa';
     ctx.lineWidth   = Math.max(2, w * 0.015);
     ctx.stroke();
@@ -196,6 +206,16 @@ const GaugeMap = {
     const osmLats    = data.track_map_lats  || [];
     const osmLons    = data.track_map_lons  || [];
     const osmAreas   = data.track_map_areas || [];
+
+	  // 1. Extracts first and last elements from array of coordinates
+    const startLat = lats[0];
+    const startLon = lons[0];
+    const endLat   = lats[lats.length - 1];
+    const endLon   = lons[lons.length - 1];
+
+    // 2. Calculates the aproximate mathematical distance from start to end
+    // Id distance less than small limit (eg: 0.0005 degrees), then the track is a closed circuit.
+    const isClosedLoop = Math.sqrt(Math.pow(endLat - startLat, 2) + Math.pow(endLon - startLon, 2)) < 0.0005;
 
     if (lats.length < 2) {
       ctx.fillStyle    = theme.label || '#4e6578';
@@ -288,13 +308,13 @@ const GaugeMap = {
     // Full track — outer, smoothed closed circuit
     ctx.lineCap  = 'round';
     ctx.lineJoin = 'round';
-    _strokeSmooth(ctx, gpsXsZ, gpsYsZ, true);
+    _strokeSmooth(ctx, gpsXsZ, gpsYsZ, isClosedLoop);
     ctx.strokeStyle = theme.map_track_outer || '#1a2a3a';
     ctx.lineWidth   = Math.max(4, w * 0.03);
     ctx.stroke();
 
     // Full track — inner
-    _strokeSmooth(ctx, gpsXsZ, gpsYsZ, true);
+    _strokeSmooth(ctx, gpsXsZ, gpsYsZ, isClosedLoop);
     ctx.strokeStyle = theme.map_track_inner || '#2255aa';
     ctx.lineWidth   = Math.max(2, w * 0.015);
     ctx.stroke();
@@ -307,7 +327,7 @@ const GaugeMap = {
         const p = toScreen(refLats[i], refLons[i]);
         refXs.push(p.x); refYs.push(p.y);
       }
-      _strokeSmooth(ctx, refXs, refYs, true);
+      _strokeSmooth(ctx, refXs, refYs, isClosedLoop);
       ctx.strokeStyle = '#cc44ff';
       ctx.lineWidth   = Math.max(2, w * 0.013);
       ctx.stroke();
