@@ -410,7 +410,7 @@ body {
 
 .dr-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
 .dr-mode-label { font-size: 10px; color: var(--text2); display: flex; align-items: center; gap: 6px; }
-.dr-mode-sel   { font-size: 10px; padding: 3px 6px; }
+.dr-mode-sel   { font-size: 10px; padding: 3px 6px; min-width: 45px; }
 
 /* Lap chips in right panel */
 .dr-chip-row { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
@@ -572,7 +572,30 @@ input[type="number"]:focus,
 select:focus,
 textarea:focus { border-color: var(--acc); }
 
-select { cursor: pointer; }
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+
+  background: var(--card2);
+  border: 1px solid var(--border);
+  color: var(--text);
+
+  padding-right: 24px;
+
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text) 50%),
+    linear-gradient(135deg, var(--text) 50%, transparent 50%);
+
+  background-position:
+    calc(100% - 12px) calc(50% - 2px),
+    calc(100% - 8px) calc(50% - 2px);
+
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+
+  cursor: pointer;
+}
 
 /* ── Checkbox ───────────────────────────────────────────────────────────────── */
 input[type="checkbox"] { accent-color: var(--acc); cursor: pointer; }
