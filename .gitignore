@@ -25,3 +25,11 @@ pyproject.spec
 
 # Runtime-generated cache-busted copy of frontend/index.html (see main.py)
 frontend/.index_v*.html
+
+# Studio exports and local render checks (multi-GB)
+output/
+
+# Local editing scratch
+*.orig
+*.before_*
+*.patch
