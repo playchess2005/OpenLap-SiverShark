@@ -1,5 +1,7 @@
 # OpenLap — Free Motorsport Telemetry Overlay Software
 
+中文文档：[README.zh-CN.md](README.zh-CN.md)
+
 **OpenLap** is a free, open-source desktop application that overlays telemetry data on racing video footage. It supports **RaceBox**, **AIM MyChron**, **MoTeC**, **GPX**, **VBOX**, and **Unipro Laptimer** data sources and runs entirely on your PC — no subscription, no cloud, no fees.
 
 Point it at your telemetry files and a folder of race videos, and it matches sessions, syncs timing, and renders professional gauge overlays — all from a single window.
@@ -302,3 +304,5 @@ The installer is output to `installer/Output/OpenLap-Setup-0.2.0.exe`.
 ## License
 
 GNU General Public License v3 — see [LICENSE](LICENSE) for details.
+
+
