@@ -14,6 +14,7 @@ import mimetypes
 import os
 import re
 import socketserver
+import sys
 import threading
 import urllib.parse
 from dataclasses import asdict
@@ -25,6 +26,9 @@ import webview
 from app_config import AppConfig, overlay_from_dict, load_scan_cache
 
 logger = logging.getLogger(__name__)
+
+# Stable application source directory.
+_BASE = Path(__file__).resolve().parent
 
 _ALLOWED_VIDEO_EXTENSIONS = frozenset({
     '.mp4', '.mov', '.avi', '.mkv', '.m4v',
@@ -221,6 +225,10 @@ class WebviewAPI:
         self._meta_cache_lock  = threading.RLock()
         self._config_lock      = threading.Lock()
         self._video_port_lock  = threading.Lock()
+        self._studio_export_cancel = threading.Event()
+        self._studio_export_process = None
+        self._studio_export_thread = None
+        self._studio_export_last_logs = []
 
     # ── Called by main.py once the window is ready ────────────────────────────
     def set_window(self, window: webview.Window) -> None:
@@ -783,6 +791,354 @@ class WebviewAPI:
         except Exception:
             logger.exception('get_available_channels failed for %s', csv_path)
             return []
+
+    # ── Studio: BLF + video manual alignment ────────────────────────────────
+    def studio_prepare_video(self, video_path: str) -> int:
+        """Register a Studio video and return the local range-server port.
+
+        This lightweight call lets the UI restore the picture immediately when
+        returning to Studio, without waiting for a full BLF probe.
+        """
+        if not os.path.isfile(video_path):
+            raise FileNotFoundError(video_path)
+        _register_known_video_path(video_path)
+        return self.get_video_server_port()
+
+    def get_studio_project(self) -> dict:
+        path = Path.home() / '.openlap' / 'studio_project.json'
+        try:
+            return __import__('json').loads(path.read_text(encoding='utf-8'))
+        except Exception:
+            return {}
+
+    def save_studio_project(self, project: dict) -> dict:
+        path = Path.home() / '.openlap' / 'studio_project.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(__import__('json').dumps(project or {}, ensure_ascii=False, indent=2), encoding='utf-8')
+        return {'ok': True, 'path': str(path)}
+
+    @staticmethod
+    def _studio_normalize_bindings(channel_bindings: object) -> dict:
+        if not isinstance(channel_bindings, dict):
+            return {}
+        result = {}
+        for raw_channel, raw_value in channel_bindings.items():
+            try:
+                channel = int(raw_channel)
+            except (TypeError, ValueError):
+                continue
+            values = raw_value if isinstance(raw_value, (list, tuple)) else [raw_value]
+            paths = []
+            for value in values:
+                if isinstance(value, dict):
+                    value = value.get('dbc_path') or value.get('path') or value.get('file')
+                if value:
+                    path = Path(str(value)).expanduser()
+                    if path.is_file():
+                        resolved = str(path.resolve())
+                        if resolved not in paths:
+                            paths.append(resolved)
+            if paths:
+                result[channel] = paths
+        return result
+
+    @staticmethod
+    def _studio_load_bound_dbs(channel_bindings: object) -> tuple:
+        import cantools
+        bindings = WebviewAPI._studio_normalize_bindings(channel_bindings)
+        databases, errors = {}, []
+        for channel, paths in bindings.items():
+            databases[channel] = []
+            for raw_path in paths:
+                path = Path(raw_path)
+                try:
+                    databases[channel].append((path, cantools.database.load_file(str(path), strict=False)))
+                except Exception as exc:
+                    errors.append({'channel': channel, 'dbc_path': str(path), 'error': str(exc)})
+        return bindings, databases, errors
+
+    def studio_scan_blf_channels(self, blf_path: str) -> list:
+        if not os.path.isfile(blf_path):
+            raise FileNotFoundError(blf_path)
+        from collections import Counter, defaultdict
+        import can
+        counts = defaultdict(Counter)
+        for msg in can.BLFReader(blf_path):
+            channel = int(msg.channel) if msg.channel is not None else 0
+            counts[channel][int(msg.arbitration_id)] += 1
+        result = []
+        for channel in sorted(counts):
+            ids = counts[channel]
+            frames = [{'frame_id': fid,
+                       'hex_id': ('0x%08X' if fid > 0x7FF else '0x%03X') % fid,
+                       'count': count}
+                      for fid, count in sorted(ids.items())]
+            result.append({'channel': channel, 'label': f'CAN Channel {channel}',
+                           'message_count': int(sum(ids.values())),
+                           'frame_count': len(ids), 'frames': frames})
+        return result
+
+    def studio_catalog_signals(self, blf_path: str, channel_bindings: object) -> dict:
+        if not os.path.isfile(blf_path):
+            raise FileNotFoundError(blf_path)
+        import can
+        bindings, databases, errors = self._studio_load_bound_dbs(channel_bindings)
+        observed = {}
+        first_ts = last_ts = None
+        for msg in can.BLFReader(blf_path):
+            if first_ts is None:
+                first_ts = msg.timestamp
+            last_ts = msg.timestamp
+            channel = int(msg.channel) if msg.channel is not None else 0
+            key = (channel, int(msg.arbitration_id))
+            observed[key] = observed.get(key, 0) + 1
+        signals, matched_ids = [], set()
+        conflicts = []
+        for (channel, frame_id), count in sorted(observed.items()):
+            db_entries = databases.get(channel) or []
+            matches = []
+            for dbc_path, db in db_entries:
+                try:
+                    matches.append((dbc_path, db.get_message_by_frame_id(frame_id)))
+                except KeyError:
+                    continue
+            if not matches:
+                continue
+            dbc_path, message = matches[0]
+            if len(matches) > 1:
+                conflicts.append({
+                    'channel': channel, 'frame_id': frame_id,
+                    'dbc_paths': [str(path) for path, _ in matches],
+                    'warning': '同一通道的多个 DBC 定义了相同 CAN ID；按列表中第一个 DBC 解码',
+                })
+            matched_ids.add((channel, frame_id))
+            frame_hex = ('0x%08X' if frame_id > 0x7FF else '0x%03X') % frame_id
+            for signal in message.signals:
+                key = f'blf::{channel}::{frame_id:X}::{signal.name}'
+                signals.append({'key': key, 'value': key,
+                    'label': f'{message.name}.{signal.name}',
+                    'source': f'BLF CH{channel} - {dbc_path.name}',
+                    'unit': signal.unit or '', 'channel': channel,
+                    'frame_id': frame_id, 'frame_hex': frame_hex,
+                    'message': message.name, 'signal': signal.name,
+                    'dbc_path': str(dbc_path), 'sample_count': int(count)})
+        channel_summary = []
+        for channel in sorted({ch for ch, _ in observed}):
+            ids = [(fid, count) for (ch, fid), count in observed.items() if ch == channel]
+            channel_summary.append({'channel': channel,
+                'label': f'CAN Channel {channel}',
+                'message_count': int(sum(count for _, count in ids)),
+                'frame_count': len(ids),
+                'matched_frame_count': sum((channel, fid) in matched_ids for fid, _ in ids),
+                'dbc_paths': list(bindings.get(channel, [])),
+                'dbc_path': (bindings.get(channel) or [''])[0]})
+        duration = float(last_ts-first_ts) if first_ts is not None and last_ts is not None else 0.0
+        return {'channels': channel_summary, 'signals': signals,
+                'errors': errors, 'conflicts': conflicts, 'duration': duration}
+
+    def studio_probe(self, video_path: str, blf_path: str, channel_bindings: object = None,
+                     track_signals: object = None) -> dict:
+        if not os.path.isfile(video_path):
+            raise FileNotFoundError(video_path)
+        if not os.path.isfile(blf_path):
+            raise FileNotFoundError(blf_path)
+        _register_known_video_path(video_path)
+        import cv2, can
+        cap = cv2.VideoCapture(video_path)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        frames = float(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        cap.release()
+        catalog = self.studio_catalog_signals(blf_path, channel_bindings or {})
+        bindings, databases, errors = self._studio_load_bound_dbs(channel_bindings or {})
+        # Trace dictionaries are keyed by the persisted track config key.  The
+        # four names below remain only as backward-compatible defaults for old
+        # projects; custom tracks never use array indexes.
+        traces = {'rpm': [], 'throttle': [], 'steering': [], 'yaw': []}
+        next_keep = {key: -1.0 for key in traces}
+        selected_tracks = {}
+        requested_tracks = track_signals if isinstance(track_signals, dict) else {}
+        if requested_tracks:
+            for raw_track, raw_key in requested_tracks.items():
+                track = str(raw_track)
+                if not isinstance(raw_key, str):
+                    continue
+                parts = raw_key.split('::', 3)
+                if len(parts) != 4 or parts[0] != 'blf':
+                    continue
+                try:
+                    selected_tracks[track] = (int(parts[1]), int(parts[2], 16), parts[3])
+                    traces.setdefault(track, [])
+                    next_keep.setdefault(track, -1.0)
+                except ValueError:
+                    continue
+        first_ts = last_ts = None
+        wheel_names = ('RL_ActualVelocity','RR_ActualVelocity',
+                       'FL_ActualVelocity','FR_ActualVelocity')
+        for msg in can.BLFReader(blf_path):
+            if first_ts is None:
+                first_ts = msg.timestamp
+            last_ts = msg.timestamp
+            elapsed = float(msg.timestamp-first_ts)
+            channel = int(msg.channel) if msg.channel is not None else 0
+            decoded = None
+            for _dbc_path, db in databases.get(channel) or []:
+                try:
+                    decoded = db.decode_message(int(msg.arbitration_id), msg.data)
+                    break
+                except Exception:
+                    continue
+            if decoded is None:
+                continue
+            for track, (wanted_channel, wanted_id, wanted_signal) in selected_tracks.items():
+                if (channel == wanted_channel and int(msg.arbitration_id) == wanted_id
+                        and elapsed >= next_keep[track] and wanted_signal in decoded):
+                    value = decoded[wanted_signal]
+                    if isinstance(value, (int, float)):
+                        traces[track].append([elapsed, float(value)])
+                        next_keep[track] = elapsed + .05
+            if 'throttle' not in selected_tracks and elapsed >= next_keep['throttle'] and 'APS_OpenPct' in decoded:
+                traces['throttle'].append([elapsed,float(decoded['APS_OpenPct'])])
+                next_keep['throttle']=elapsed+.05
+            if 'steering' not in selected_tracks and elapsed >= next_keep['steering'] and 'SteeringWheelAngle' in decoded:
+                traces['steering'].append([elapsed,float(decoded['SteeringWheelAngle'])])
+                next_keep['steering']=elapsed+.05
+            if 'yaw' not in selected_tracks and elapsed >= next_keep['yaw'] and 'CDC_YawRate' in decoded:
+                traces['yaw'].append([elapsed,float(decoded['CDC_YawRate'])])
+                next_keep['yaw']=elapsed+.05
+            values=[abs(float(decoded[name])) for name in wheel_names if name in decoded]
+            if 'rpm' not in selected_tracks and len(values)==4 and elapsed >= next_keep['rpm']:
+                traces['rpm'].append([elapsed,sum(values)/4.0])
+                next_keep['rpm']=elapsed+.05
+        for key, points in traces.items():
+            if len(points)>2400:
+                traces[key]=points[::max(1,len(points)//2400)]
+        duration=float(last_ts-first_ts) if first_ts is not None and last_ts is not None else 0.0
+        video_duration=frames/fps if fps>0 else 0.0
+        return {'video': {'path': video_path, 'name': Path(video_path).name,
+                          'duration': video_duration, 'fps': fps,
+                          'width': width, 'height': height},
+                'blf': {'path': blf_path, 'name': Path(blf_path).name,
+                        'duration': duration},
+                'traces': traces, 'channels': catalog['channels'],
+                'signals': catalog['signals'],
+                'dbc_bindings': {str(k): list(v) for k,v in bindings.items()},
+                'track_signals': {str(key): value for key, value in requested_tracks.items()},
+                'errors': catalog['errors']+errors,
+                'conflicts': catalog.get('conflicts', [])}
+
+    def start_studio_export(self, params: dict) -> dict:
+        with self._thread_lock:
+            if self._studio_export_thread and self._studio_export_thread.is_alive():
+                return {'ok': False, 'error': '已有 Studio 导出任务正在运行'}
+            self._studio_export_cancel.clear()
+            def run() -> None:
+                import subprocess
+                last_logs = []
+
+                def remember_log(line: str) -> None:
+                    if not line:
+                        return
+                    last_logs.append(line)
+                    del last_logs[:-40]
+                    self._studio_export_last_logs = list(last_logs)
+
+                def progress(percent: float, stage: str, message: str) -> None:
+                    self._push('studio-export-progress', percent=percent,
+                               stage=stage, message=message)
+
+                try:
+                    progress(0, 'starting', '正在启动导出…')
+                    script = _BASE / 'generate_openlap_video.py'
+                    env = os.environ.copy()
+                    bindings = self._studio_normalize_bindings(params.get('dbc_bindings', {}))
+                    env.update({'OL_VIDEO': str(params['video_path']), 'OL_BLF': str(params['blf_path']),
+                                'OL_START': str(float(params.get('start_s', 0))), 'OL_END': str(float(params.get('end_s', 0))),
+                                'OL_BLF_OFFSET': str(float(params.get('global_offset_s', 0))),
+                                'OL_STEER_OFFSET': str(float(params.get('steering_offset_s', 0))),
+                                'OL_YAW_OFFSET': str(float(params.get('yaw_offset_s', 0))),
+                                'OL_OUTPUT': str(params['output_path']), 'OL_WORKERS': str(int(params.get('workers', 8))),
+                                'OL_DBC_A': str((bindings.get(0) or [''])[0]),
+                                'OL_DBC_B': str((bindings.get(1) or [''])[0]),
+                                'OL_DBC_CDC': str((bindings.get(2) or [''])[0]),
+                                'OL_CAN_A_CHANNEL': '0', 'OL_CAN_B_CHANNEL': '1',
+                                'OL_CAN_CDC_CHANNEL': '2',
+                                'OL_DBC_BINDINGS': __import__('json').dumps(
+                                    {str(k): list(v) for k,v in bindings.items()}, ensure_ascii=False),
+                                'OL_OVERLAY_LAYOUT': __import__('json').dumps(
+                                    asdict(self._config.overlay), ensure_ascii=False)})
+                    command = ([sys.executable, '--studio-export'] if getattr(sys, 'frozen', False)
+                               else [sys.executable, str(script)])
+                    progress(5, 'preparing', '正在准备视频、BLF 和 Overlay 数据…')
+                    # Keep stdout binary: Windows may use the GBK locale while
+                    # the exporter emits UTF-8 (and FFmpeg can emit arbitrary
+                    # bytes).  Decoding explicitly prevents a GBK
+                    # UnicodeDecodeError from aborting an otherwise valid run.
+                    proc = subprocess.Popen(command, cwd=str(_BASE), env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0,
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                    self._studio_export_process = proc
+                    for raw_line in iter(proc.stdout.readline, b''):
+                        if self._studio_export_cancel.is_set():
+                            proc.terminate(); break
+                        line = raw_line.decode('utf-8', errors='replace').rstrip('\r\n')
+                        remember_log(line)
+                        match = re.search(r'([0-9]+(?:\.[0-9]+)?)%\s+(.*)', line)
+                        if match:
+                            pct = min(94.0, max(5.0, float(match.group(1))))
+                            progress(pct, 'encoding', match.group(2))
+                        elif line:
+                            lower = line.lower()
+                            if 'final' in lower or 'mux' in lower or 'write' in lower:
+                                progress(95, 'finalizing', line)
+                            else:
+                                self._push('studio-export-log', message=line,
+                                           stage='encoding')
+                    code = proc.wait()
+                    cancelled = self._studio_export_cancel.is_set()
+                    output_path = str(params.get('output_path', ''))
+                    output_exists = bool(output_path and Path(output_path).is_file())
+                    ok = code == 0 and not cancelled and output_exists
+                    if cancelled:
+                        error = '用户取消导出'
+                    elif code != 0:
+                        error = f'导出进程退出码 {code}'
+                    elif not output_exists:
+                        error = f'导出进程完成但未找到输出文件：{output_path}'
+                    else:
+                        error = ''
+                    if ok:
+                        progress(99, 'finalizing', '正在完成输出文件…')
+                    elif cancelled:
+                        # Explicitly reset the UI after cancellation.
+                        progress(0, 'cancelled', error)
+                    else:
+                        progress(0, 'failed', error)
+                    self._push('studio-export-done', ok=ok, cancelled=cancelled,
+                               output_path=output_path, error=error,
+                               stage='done' if ok else ('cancelled' if cancelled else 'failed'),
+                               percent=100 if ok else 0,
+                               last_logs=list(last_logs))
+                except Exception as exc:
+                    logger.exception('Studio export failed')
+                    remember_log(str(exc))
+                    progress(0, 'failed', str(exc))
+                    self._push('studio-export-done', ok=False, cancelled=False,
+                               error=str(exc), stage='failed', percent=0,
+                               last_logs=list(last_logs))
+                finally:
+                    self._studio_export_process = None
+            self._studio_export_thread = threading.Thread(target=run, name='studio-export', daemon=True)
+            self._studio_export_thread.start()
+        return {'ok': True}
+
+    def cancel_studio_export(self) -> None:
+        self._studio_export_cancel.set()
+        proc = self._studio_export_process
+        if proc and proc.poll() is None:
+            try: proc.terminate()
+            except Exception: pass
 
     # ── File dialogs ──────────────────────────────────────────────────────────
     def open_folder_dialog(self, start_dir: str = '') -> Optional[str]:

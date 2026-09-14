@@ -161,4 +161,9 @@ if __name__ == '__main__':
     # Required for multiprocessing on Windows (used by video export workers)
     from multiprocessing import freeze_support
     freeze_support()
-    main()
+    if '--studio-export' in sys.argv:
+        # The packaged EXE re-enters itself for a headless Studio export.
+        from generate_openlap_video import main as studio_export_main
+        studio_export_main()
+    else:
+        main()

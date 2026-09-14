@@ -123,6 +123,43 @@ def render_frame_worker(args: Tuple) -> bytes:
                 logger.debug('Failed to render lap_info gauge %s: %s', gtype, e)
             continue
 
+        if gtype == 'Pedals':
+            th_key = g.get('throttle_channel', 'APS_OpenPct')
+            br_key = g.get('brake_channel', 'BrakePct')
+            gd = {
+                'throttle_history': [
+                    max(0.0, min(100.0, float(p.get(th_key, 0.0))))
+                    for p in history
+                ],
+                'brake_history': [
+                    max(0.0, min(100.0, float(p.get(br_key, 0.0))))
+                    for p in history
+                ],
+                '_theme': theme,
+            }
+            try:
+                img = render_style('gauge', gtype, gd, gw, gh)
+                _blend(frame, img, gx, gy)
+            except Exception as e:
+                logger.debug('Failed to render pedals gauge: %s', e)
+            continue
+
+        if gtype == 'Wheel Torque':
+            last = history[-1] if history else {}
+            gd = {
+                'FL': float(last.get(g.get('fl_channel', 'Torque_FL'), 0.0)),
+                'FR': float(last.get(g.get('fr_channel', 'Torque_FR'), 0.0)),
+                'RL': float(last.get(g.get('rl_channel', 'Torque_RL'), 0.0)),
+                'RR': float(last.get(g.get('rr_channel', 'Torque_RR'), 0.0)),
+                '_theme': theme,
+            }
+            try:
+                img = render_style('gauge', gtype, gd, gw, gh)
+                _blend(frame, img, gx, gy)
+            except Exception as e:
+                logger.debug('Failed to render wheel-torque gauge: %s', e)
+            continue
+
         if gtype == 'Image':
             image_path = g.get('image_path', '')
             if not image_path or not os.path.isfile(image_path):
@@ -193,7 +230,9 @@ def render_frame_worker(args: Tuple) -> bytes:
             else:
                 if gtype == 'G-Meter':
                     channel = 'g_meter'   # fixed by the type itself, not user-selectable
-                gd = gauge_data(channel, history, unit=speed_unit)
+                gd = gauge_data(channel, history, unit=speed_unit,
+                                extra_label=g.get('signal_label', ''),
+                                extra_unit=g.get('signal_unit', ''))
                 gd['lap_duration'] = lap_duration
                 gd['is_bike']      = is_bike
                 gd['_theme']       = theme

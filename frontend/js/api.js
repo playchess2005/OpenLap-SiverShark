@@ -67,6 +67,14 @@ const API = (() => {
       install_playwright_chromium:   () => null,
       start_auto_sync:               () => ({ queued: 0 }),
       cancel_auto_sync:              () => null,
+      get_studio_project:            () => ({}),
+      save_studio_project:           () => ({ok:true}),
+      studio_scan_blf_channels:      () => [],
+      studio_prepare_video:         () => 0,
+      studio_catalog_signals:        () => ({channels:[],signals:[],errors:[]}),
+      studio_probe:                  () => ({video:{duration:0},blf:{duration:0},traces:{},channels:[],signals:[]}),
+      start_studio_export:           () => ({ok:true}),
+      cancel_studio_export:          () => null,
     };
     const fn = mocks[method];
     return fn ? fn() : null;
@@ -147,6 +155,15 @@ const API = (() => {
 
     listSessionChannels:        (csvPath)            => call('list_session_channels', csvPath),
     getAvailableChannels:       (csvPath)            => call('get_available_channels', csvPath),
+
+    getStudioProject:           ()                   => call('get_studio_project'),
+    saveStudioProject:          (project)            => call('save_studio_project', project),
+    studioPrepareVideo:        (videoPath)           => call('studio_prepare_video', videoPath),
+    studioScanBlfChannels:      (blfPath)           => call('studio_scan_blf_channels', blfPath),
+    studioCatalogSignals:        (blfPath, bindings) => call('studio_catalog_signals', blfPath, bindings),
+    studioProbe:                (videoPath, blfPath, bindings, trackSignals) => call('studio_probe', videoPath, blfPath, bindings, trackSignals || {}),
+    startStudioExport:          (params)             => call('start_studio_export', params),
+    cancelStudioExport:         ()                   => call('cancel_studio_export'),
 
     confirmClearQueue:          ()                   => call('confirm_clear_queue'),
   };

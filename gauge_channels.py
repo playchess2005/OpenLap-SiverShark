@@ -25,6 +25,14 @@ GAUGE_CHANNELS = {
     'lap_time':     {'label': 'Lap Time',     'unit': '',     'hist_key': 't',             'min': 0,    'max': 120,   'symmetric': False},
     'delta_time':   {'label': 'Delta',        'unit': 's',    'hist_key': 'delta_time',    'min': -30,  'max': 30,    'symmetric': True},
     'gear':         {'label': 'Gear',         'unit': '',     'hist_key': 'gear',          'min': 0,    'max': 6,     'symmetric': False},
+    'APS_OpenPct':        {'label': 'Throttle',       'unit': '%',         'hist_key': 'APS_OpenPct',        'min': 0,    'max': 100, 'symmetric': False},
+    'BrakePct':           {'label': 'Brake',          'unit': '%',         'hist_key': 'BrakePct',           'min': 0,    'max': 100, 'symmetric': False},
+    'SteeringWheelAngle': {'label': 'Steering Angle', 'unit': '\u00b0', 'hist_key': 'SteeringWheelAngle', 'min': -540, 'max': 540, 'symmetric': True},
+    'CDC_YawRate':      {'label': 'Yaw Rate',       'unit': 'deg/s', 'hist_key': 'CDC_YawRate', 'min': -300, 'max': 300, 'symmetric': True},
+    'Torque_FL':          {'label': 'Front Left',     'unit': 'N\u00b7m', 'hist_key': 'Torque_FL',        'min': -50,  'max': 50,  'symmetric': True},
+    'Torque_FR':          {'label': 'Front Right',    'unit': 'N\u00b7m', 'hist_key': 'Torque_FR',        'min': -50,  'max': 50,  'symmetric': True},
+    'Torque_RL':          {'label': 'Rear Left',      'unit': 'N\u00b7m', 'hist_key': 'Torque_RL',        'min': -50,  'max': 50,  'symmetric': True},
+    'Torque_RR':          {'label': 'Rear Right',     'unit': 'N\u00b7m', 'hist_key': 'Torque_RR',        'min': -50,  'max': 50,  'symmetric': True},
 }
 
 GAUGE_COLOURS = [
@@ -62,6 +70,9 @@ GAUGE_TYPES: dict[str, dict] = {
     'Circuit':     {'label': 'Circuit Map',  'bucket': 'none'},
     'Zoomed':      {'label': 'Zoomed Map',   'bucket': 'none'},
     'G-Meter':     {'label': 'G-Meter',      'bucket': 'none'},
+    'Steering':    {'label': 'Steering Wheel','bucket': 'single'},
+    'Pedals':      {'label': 'Pedal Curves',  'bucket': 'none'},
+    'Wheel Torque': {'label': 'Four-wheel Torque', 'bucket': 'none'},
 }
 
 
@@ -142,10 +153,23 @@ def build_multi_data(channels_list: list, history: list,
     from units import KMH_PER_UNIT
     entries = []
     for i, ch in enumerate(channels_list):
-        if ch not in GAUGE_CHANNELS:
+        if isinstance(ch, dict):
+            ch = ch.get('channel') or ch.get('key') or ''
+        if ch in GAUGE_CHANNELS:
+            meta = _resolved_channel_meta(ch, unit)
+            hk = meta['hist_key']
+        else:
+            label = ch.split('::')[-1] if ch.startswith('blf::') else ch
+            vals = [p.get(ch, 0.0) for p in history] if history else [0.0]
+            ref_vals = [p.get(ch, 0.0) for p in ref_history] if ref_history else []
+            min_val, max_val = _auto_range(vals)
+            entries.append({
+                'channel': ch, 'label': label, 'unit': '',
+                'values': vals, 'value': vals[-1] if vals else 0.0,
+                'ref_values': ref_vals, 'min_val': min_val,
+                'max_val': max_val, 'symmetric': False, 'color_idx': i,
+            })
             continue
-        meta = _resolved_channel_meta(ch, unit)
-        hk   = meta['hist_key']
         vals = [p.get(hk, 0.0) for p in history] if history else [0.0]
         ref_vals = []
         if ref_history:

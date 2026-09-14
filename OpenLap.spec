@@ -106,6 +106,9 @@ hidden_imports = [
     'styles.gauge_delta',
     'styles.gauge_dial',
     'styles.gauge_gmeter',
+    'styles.gauge_pedals',
+    'styles.gauge_steering',
+    'styles.gauge_wheel_torque',
     'styles.gauge_image',
     'styles.gauge_info',
     'styles.gauge_lap_scoreboard',
@@ -118,6 +121,10 @@ hidden_imports = [
     'styles.map_circuit',
     'styles.map_progress',
     'styles.map_zoomed',
+    # Studio exporter and BLF decoding
+    'generate_openlap_video',
+    'can',
+    'cantools',
     # Data loaders
     'racebox_data',
     'aim_data',

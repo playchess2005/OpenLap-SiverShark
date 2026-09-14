@@ -24,6 +24,9 @@
     'Sector Bar': (ctx, d, w, h) => GaugeSectorBar.render(ctx, d, w, h),
     'Dial':       (ctx, d, w, h) => GaugeDial.render(ctx, d, w, h),
     'G-Meter':    (ctx, d, w, h) => GaugeGmeter.render(ctx, d, w, h),
+    'Steering':   (ctx, d, w, h) => GaugeSteering.render(ctx, d, w, h),
+    'Pedals':     (ctx, d, w, h) => GaugePedals.render(ctx, d, w, h),
+    'Wheel Torque': (ctx, d, w, h) => GaugeWheelTorque.render(ctx, d, w, h),
     'Lean':       (ctx, d, w, h) => GaugeLean.render(ctx, d, w, h),
     'Circuit':    (ctx, d, w, h) => GaugeMap.render(ctx, d, w, h),
     'Zoomed':     (ctx, d, w, h) => GaugeMap.renderZoomed(ctx, d, w, h),
@@ -52,6 +55,9 @@
     { value: 'Circuit',    label: 'Circuit Map',  bucket: 'none'   },
     { value: 'Zoomed',     label: 'Zoomed Map',   bucket: 'none'   },
     { value: 'G-Meter',    label: 'G-Meter',      bucket: 'none'   },
+    { value: 'Steering',   label: 'Steering Wheel', bucket: 'single' },
+    { value: 'Pedals',     label: 'Pedal Curves', bucket: 'none' },
+    { value: 'Wheel Torque', label: 'Four-wheel Torque', bucket: 'none' },
   ];
 
   function _gaugeTypeBucket(type) {
@@ -61,17 +67,39 @@
   // Fixed data channels selectable for a 'single'-bucket gauge type, or as
   // an entry in a Multi-Line gauge's channel list.
   const DATA_CHANNELS = [
-    { value: 'speed',       label: 'Speed' },
-    { value: 'rpm',         label: 'RPM' },
-    { value: 'exhaust_temp',label: 'Exhaust Temp' },
-    { value: 'gforce_lon',  label: 'Long G' },
-    { value: 'gforce_lat',  label: 'Lat G' },
-    { value: 'lean',        label: 'Lean Angle' },
-    { value: 'altitude',    label: 'Altitude' },
-    { value: 'lap_time',    label: 'Lap Time' },
-    { value: 'delta_time',  label: 'Delta' },
-    { value: 'gear',        label: 'Gear' },
+    { value: 'speed', label: 'Speed', source: 'GPS / derived' },
+    { value: 'rpm', label: 'RPM', source: 'Vehicle CAN' },
+    { value: 'exhaust_temp', label: 'Exhaust Temp', source: 'Vehicle CAN' },
+    { value: 'gforce_lon', label: 'Long G', source: 'IMU / derived' },
+    { value: 'gforce_lat', label: 'Lat G', source: 'IMU / derived' },
+    { value: 'lean', label: 'Lean Angle', source: 'IMU / derived' },
+    { value: 'altitude', label: 'Altitude', source: 'GPS / derived' },
+    { value: 'lap_time', label: 'Lap Time', source: 'OpenLap' },
+    { value: 'delta_time', label: 'Delta', source: 'OpenLap' },
+    { value: 'gear', label: 'Gear', source: 'Vehicle CAN' },
+    { value: 'APS_OpenPct', label: 'Throttle', source: 'Vehicle CAN' },
+    { value: 'BrakePct', label: 'Brake', source: 'Vehicle CAN' },
+    { value: 'SteeringWheelAngle', label: 'Steering Angle', source: 'Vehicle CAN' },
+    { value: 'Torque_FL', label: 'Torque FL', source: 'Vehicle CAN' },
+    { value: 'Torque_FR', label: 'Torque FR', source: 'Vehicle CAN' },
+    { value: 'Torque_RL', label: 'Torque RL', source: 'Vehicle CAN' },
+    { value: 'Torque_RR', label: 'Torque RR', source: 'Vehicle CAN' },
+    { value: 'CDC_YawRate', label: 'Yaw Rate', source: 'CDC sensor' },
   ];
+
+  function _channelGroups(options) {
+    const groups = new Map();
+    for (const item of options) {
+      const source = item.source || 'Session channels';
+      if (!groups.has(source)) groups.set(source, []);
+      groups.get(source).push(item);
+    }
+    return [...groups.entries()].map(([source, items]) =>
+      '<optgroup label="' + _esc(source) + '">' +
+      items.map(o => '<option value="' + _esc(o.value) + '">' + _esc(o.label) + '</option>').join('') +
+      '</optgroup>'
+    ).join('');
+  }
 
   // Extra/dynamic channel options (session extras + any linked secondary
   // telemetry source, via getAvailableChannels), filtered by the "show all"
@@ -83,12 +111,20 @@
       .filter(c => !fixedKeys.has(c.key))
       .filter(c => _showAllChannelsEditor || !c.noisy)
       .sort((a, b) => a.label.localeCompare(b.label))
-      .map(c => ({ value: c.key, label: c.label }));
+      .map(c => ({ value: c.key, label: c.label, source: c.source || 'Session channels' }));
   }
 
   // Every selectable data channel: the fixed set plus this session's extras.
+  function _blfChannelOptions() {
+    return _blfSignals.map(s => ({
+      value: s.key,
+      label: s.label + (s.unit ? ' [' + s.unit + ']' : ''),
+      source: s.source || 'BLF / DBC',
+    }));
+  }
+
   function _allChannelOptions() {
-    return DATA_CHANNELS.concat(_extraChannelOptions());
+    return DATA_CHANNELS.concat(_extraChannelOptions(), _blfChannelOptions());
   }
 
   // Label lookup for a channel key — fixed list first, falling back to the
@@ -136,7 +172,8 @@
   let _trackMapGeometry = null; // {lats, lons} from OSM — loaded async on session change
   let _extraChannels   = [];    // [{key,label,unit,noisy}, ...] from getAvailableChannels — dynamic
                                  // channels beyond the fixed DATA_CHANNELS map
-  let _showAllChannelsEditor = false; // "show noisy channels" toggle for the data-channel picker
+  let _showAllChannelsEditor = false;
+  let _blfSignals = []; // "show noisy channels" toggle for the data-channel picker
   let _appConfig = null;   // AppConfig dict, refreshed on each mount() — see API.getConfig()
 
   // ── Speed unit conversion (mirrors units.py on the Python side) ────────────
@@ -347,6 +384,19 @@
         };
       });
       return { theme, multi_channels };
+    }
+    if (type === 'Pedals') {
+      const th = gauge?.throttle_channel || 'APS_OpenPct';
+      const br = gauge?.brake_channel || 'BrakePct';
+      return { theme, throttle_history: hist.map(pt => Math.max(0, Math.min(100, Number(pt[th] ?? 0)))),
+        brake_history: hist.map(pt => Math.max(0, Math.min(100, Number(pt[br] ?? 0)))) };
+    }
+    if (type === 'Wheel Torque') {
+      const keys = {FL: gauge?.fl_channel || 'Torque_FL', FR: gauge?.fr_channel || 'Torque_FR',
+        RL: gauge?.rl_channel || 'Torque_RL', RR: gauge?.rr_channel || 'Torque_RR'};
+      const out = { theme };
+      Object.keys(keys).forEach(k => { out[k] = Number(p[keys[k]] ?? 0); });
+      return out;
     }
     if (type === 'Info') {
       const ov   = gauge?.info_overrides || {};
@@ -815,6 +865,15 @@
   // "▶ Export Now": queues the current session, then immediately starts
   // exporting everything in the queue and jumps to the Export tab to watch.
   async function _exportNow() {
+    const ps = State.get('previewSession');
+    const studioProject = API.getStudioProject ? await API.getStudioProject().catch(() => ({})) : {};
+    if (ps?.studio || (studioProject?.video_path && !ps?.csv_path)) {
+      // Studio projects do not have a CSV lap. Persist the card layout and
+      // return to Studio, where the BLF-aware export pipeline is available.
+      await saveLayout();
+      Router.navigate('studio');
+      return;
+    }
     _addCurrentToQueue();
     const items = State.get('selectedItems') || [];
     if (!items.length) return;
@@ -1297,6 +1356,22 @@
         </div>`;
     }
 
+    if (g.type === 'Pedals') {
+      const opts = _channelGroups(_allChannelOptions());
+      return '<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px;">' +
+        '<div style="font-size:9px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;">Signal Source</div>' +
+        '<label class="form-row"><span class="form-label">Throttle</span><select id="pedal-throttle-channel" style="flex:1">' + opts + '</select></label>' +
+        '<label class="form-row"><span class="form-label">Brake</span><select id="pedal-brake-channel" style="flex:1">' + opts + '</select></label></div>';
+    }
+
+    if (g.type === 'Wheel Torque') {
+      const opts = _channelGroups(_allChannelOptions());
+      return '<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px;">' +
+        '<div style="font-size:9px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;">Signal Source</div>' +
+        ['FL','FR','RL','RR'].map(k => '<label class="form-row"><span class="form-label">' + k + '</span><select id="torque-' + k.toLowerCase() + '-channel" style="flex:1">' + opts + '</select></label>').join('') +
+        '</div>';
+    }
+
     if (g.type === 'Image') {
       const path    = g.image_path || '';
       const opacity = Math.round((g.opacity ?? 1.0) * 100);
@@ -1403,6 +1478,21 @@
   }
 
   function _bindChannelPropEvents(panel, g) {
+    if (g.type === 'Pedals') {
+      const binds = [['throttle','throttle_channel'], ['brake','brake_channel']];
+      binds.forEach(([id, key]) => {
+        const sel = panel.querySelector('#pedal-' + id + '-channel');
+        if (sel) { sel.value = g[key] || (id === 'throttle' ? 'APS_OpenPct' : 'BrakePct'); sel.addEventListener('change', () => { g[key] = sel.value; rebuildGaugeCanvases(); saveLayout(); }); }
+      });
+    }
+    if (g.type === 'Wheel Torque') {
+      ['fl','fr','rl','rr'].forEach(id => {
+        const key = id + '_channel';
+        const sel = panel.querySelector('#torque-' + id + '-channel');
+        if (sel) { sel.value = g[key] || 'Torque_' + id.toUpperCase(); sel.addEventListener('change', () => { g[key] = sel.value; rebuildGaugeCanvases(); saveLayout(); }); }
+      });
+    }
+
     if (g.type === 'Image') {
       const inp       = panel.querySelector('#img-path-inp');
       const browseBtn = panel.querySelector('#img-browse-btn');
@@ -1689,10 +1779,10 @@
         : (DATA_CHANNELS.some(c => c.value === g.channel) ? '' : `<option value="${_esc(g.channel)}" selected>${_esc(g.channel)}</option>`);
       channelPickerHtml = `
         <div class="form-row">
-          <span class="form-label">Data Channel</span>
+          <span class="form-label">Signal Source</span>
           <select id="prop-channel" style="flex:1">
-            ${DATA_CHANNELS.map(c => `<option value="${c.value}" ${c.value===g.channel?'selected':''}>${c.label}</option>`).join('')}
-            ${extraOptgroup}
+            ${_channelGroups(_allChannelOptions()).replace(/<option value="([^"]+)">/g, function(m, value) { return '<option value="' + value + '" ' + (value===g.channel ? 'selected' : '') + '>'; })}
+            ${!_allChannelOptions().some(function(c) { return c.value === g.channel; }) ? '<option value="' + _esc(g.channel) + '" selected>' + _esc(g.channel) + '</option>' : ''}
           </select>
         </div>
         <div class="form-row">
@@ -1772,6 +1862,18 @@
 
     panel.querySelector('#prop-channel')?.addEventListener('change', e => {
       g.channel = e.target.value;
+      const rawSignal = _blfSignals.find(item => item.key === g.channel);
+      if (rawSignal) {
+        g.signal_label = rawSignal.label;
+        g.signal_unit = rawSignal.unit || '';
+        g.signal_binding = {
+          channel: rawSignal.channel, frame_id: rawSignal.frame_id,
+          message: rawSignal.message, signal: rawSignal.signal,
+          dbc_path: rawSignal.dbc_path,
+        };
+      } else {
+        delete g.signal_label; delete g.signal_unit; delete g.signal_binding;
+      }
       rebuildGaugeCanvases();
       rebuildGaugeList();
       saveLayout();
@@ -1868,6 +1970,8 @@
   function _typeDefaults(type) {
     if (type === 'Info')       return { selected_fields: ['track','datetime','vehicle','weather','wind'], info_overrides: {} };
     if (type === 'Multi-Line') return { multi_channels: ['speed', 'gforce_lat'] };
+    if (type === 'Pedals') return { throttle_channel: 'APS_OpenPct', brake_channel: 'BrakePct' };
+    if (type === 'Wheel Torque') return { fl_channel: 'Torque_FL', fr_channel: 'Torque_FR', rl_channel: 'Torque_RL', rr_channel: 'Torque_RR' };
     if (type === 'Image')      return { image_path: '', opacity: 1.0, fit: 'contain' };
     if (type === 'Circuit' || type === 'Zoomed') return { zoom_radius_m: 150, show_ref: true };
     return {};
@@ -1944,11 +2048,19 @@
     _selected  = null;
 
     // ── Resolve video src BEFORE rendering HTML (mirrors data page approach) ──
-    const prevSession = State.get('previewSession');
+    let prevSession = State.get('previewSession');
     // Only fetch port once — the server never changes address, and re-calling on fast
     // re-navigation can fail/reject and zero out _livePort, hiding the video element.
     if (!_livePort) _livePort = await API.getVideoServerPort().catch(() => 0);
     _appConfig = await API.getConfig().catch(() => _appConfig || {});
+    const studioProject = API.getStudioProject ? await API.getStudioProject().catch(() => ({})) : {};
+    _blfSignals = Array.isArray(studioProject?.signals) ? studioProject.signals : [];
+    if ((!prevSession || !prevSession.video_paths?.length) && studioProject?.video_path) {
+      prevSession = {
+        studio: true, csv_path: '', video_paths: [studioProject.video_path],
+        sync_offset: studioProject.global_offset_s || 0,
+      };
+    }
     if (_mountGen !== myGen) return;  // navigated away while awaiting port
 
     // Fast-remount path: if the same session is already loaded in memory, skip all
@@ -1986,6 +2098,7 @@
                     display:flex; align-items:center; gap:8px; flex-shrink:0;
                     background:var(--sidebar);">
           <span style="font-size:12px; font-weight:700; color:var(--text)">Overlay</span>
+          ${studioProject?.video_path ? '<button class="btn btn-sm" id="studio-back-btn">← 保存并返回 Studio</button><span style="font-size:9px;color:var(--text2)">点击 + Add Gauge 添加卡片，右侧 Signal Source 选择 DBC 信号</span>' : ''}
 
           <!-- Lap selector -->
           <div style="display:flex;align-items:center;gap:3px;margin-left:8px;flex-shrink:0;">
@@ -2225,6 +2338,10 @@
     }
 
     container.querySelector('#add-gauge-btn').addEventListener('click', addGauge);
+    container.querySelector('#studio-back-btn')?.addEventListener('click', async () => {
+      await saveLayout();
+      Router.navigate('studio');
+    });
 
     container.querySelector('#save-layout-btn').addEventListener('click', async () => {
       await saveLayout();
@@ -2322,6 +2439,13 @@
       _startLiveRaf();
       // If track map geometry isn't loaded yet, try fetching it now
       if (!_trackMapGeometry) _fetchTrackMapGeometry(myGen);
+    } else if (prevSession?.studio && !prevSession.csv_path) {
+      // Studio projects have BLF channels rather than a lap CSV.  The editor
+      // still previews the selected video and exposes the Studio signal catalog.
+      _liveSession = prevSession;
+      _liveOffset = prevSession.sync_offset || 0;
+      _extraChannels = [];
+      _startLiveRaf();
     } else {
       // ── Slow path: new session or first mount — full async load ──
       if (prevSession) loadLiveSession(prevSession);

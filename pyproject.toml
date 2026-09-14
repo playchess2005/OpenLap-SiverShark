@@ -18,6 +18,9 @@ dependencies = [
     "opencv-python>=4.8",
     "pandas>=2.0",
     "pywebview>=5.0",
+    # Vector BLF logs and the DBC signal bindings used to decode them.
+    "python-can>=4.3",
+    "cantools>=39.0",
     # AIM XRK reader. Windows has the option of the AIM-distributed MatLabXRK
     # DLL (downloaded at runtime from aim-sportline.com); macOS/Linux must use
     # libxrk because AIM does not ship a native binary for those platforms.

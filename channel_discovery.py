@@ -57,6 +57,8 @@ def list_channels(session: Session) -> List[dict]:
     sample_pts = pts[::step]
 
     for name, meta in session.extra_channel_meta.items():
+        if name in GAUGE_CHANNELS:
+            continue
         sample_vals = [p.extra.get(name, 0.0) for p in sample_pts]
         result.append({
             'key':   name,
