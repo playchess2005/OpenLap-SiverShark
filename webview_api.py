@@ -191,7 +191,7 @@ class _VideoFileHandler(http.server.BaseHTTPRequestHandler):
                         break
                     self.wfile.write(chunk)
                     remaining -= len(chunk)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
     def log_message(self, *args):
@@ -229,6 +229,15 @@ class WebviewAPI:
         self._studio_export_process = None
         self._studio_export_thread = None
         self._studio_export_last_logs = []
+        self._studio_catalog_cache = {}
+        self._studio_channel_cache = {}
+        self._studio_channel_scan_lock = threading.Lock()
+        self._studio_catalog_lock = threading.RLock()
+        self._studio_scan_thread = None
+        # A trajectory probe is a full BLF pass and can take minutes. Keep only
+        # one such pass active and cache recent completed results.
+        self._studio_probe_lock = threading.Lock()
+        self._studio_probe_cache = {}
 
     # ── Called by main.py once the window is ready ────────────────────────────
     def set_window(self, window: webview.Window) -> None:
@@ -862,36 +871,95 @@ class WebviewAPI:
             raise FileNotFoundError(blf_path)
         from collections import Counter, defaultdict
         import can
-        counts = defaultdict(Counter)
-        for msg in can.BLFReader(blf_path):
-            channel = int(msg.channel) if msg.channel is not None else 0
-            counts[channel][int(msg.arbitration_id)] += 1
-        result = []
-        for channel in sorted(counts):
-            ids = counts[channel]
-            frames = [{'frame_id': fid,
-                       'hex_id': ('0x%08X' if fid > 0x7FF else '0x%03X') % fid,
-                       'count': count}
-                      for fid, count in sorted(ids.items())]
-            result.append({'channel': channel, 'label': f'CAN Channel {channel}',
-                           'message_count': int(sum(ids.values())),
-                           'frame_count': len(ids), 'frames': frames})
-        return result
+        import time
+        stat = os.stat(blf_path)
+        cache_key = (str(Path(blf_path).resolve()), stat.st_size, stat.st_mtime_ns)
+        with self._studio_catalog_lock:
+            cached = self._studio_channel_cache.get(cache_key)
+        if cached is not None:
+            total_frames = sum(ch.get('message_count', 0) for ch in cached)
+            self._push('studio-channel-scan-progress', percent=100, frames=total_frames,
+                       elapsed_s=0, eta_s=0, cached=True,
+                       result=f'{len(cached)} 个通道', message='通道扫描已从缓存恢复')
+            return cached
 
-    def studio_catalog_signals(self, blf_path: str, channel_bindings: object) -> dict:
-        if not os.path.isfile(blf_path):
-            raise FileNotFoundError(blf_path)
+        # Recheck after acquiring the scan lock: another click may have finished
+        # while this caller was waiting.
+        with self._studio_channel_scan_lock:
+            with self._studio_catalog_lock:
+                cached = self._studio_channel_cache.get(cache_key)
+            if cached is not None:
+                total_frames = sum(ch.get('message_count', 0) for ch in cached)
+                self._push('studio-channel-scan-progress', percent=100, frames=total_frames,
+                           elapsed_s=0, eta_s=0, cached=True,
+                           result=f'{len(cached)} 个通道', message='通道扫描已从缓存恢复')
+                return cached
+
+            counts = defaultdict(Counter)
+            frame_count = 0
+            started = time.monotonic()
+            self._push('studio-channel-scan-progress', percent=0, frames=0,
+                       elapsed_s=0, eta_s=None, message='正在扫描 BLF 通道…')
+            reader = can.BLFReader(blf_path)
+            for msg in reader:
+                channel = int(msg.channel) if msg.channel is not None else 0
+                counts[channel][int(msg.arbitration_id)] += 1
+                frame_count += 1
+                if frame_count % 10000 == 0:
+                    total = max(int(getattr(reader, 'file_size', 0) or 0), 1)
+                    percent = min(99, int(reader.file.tell() * 100 / total))
+                    elapsed = time.monotonic() - started
+                    eta = elapsed * (100 - percent) / percent if percent > 0 else None
+                    self._push('studio-channel-scan-progress', percent=percent,
+                               frames=frame_count, elapsed_s=elapsed, eta_s=eta,
+                               message=f'正在扫描 BLF 通道… {frame_count:,} 帧')
+            result = []
+            for channel in sorted(counts):
+                ids = counts[channel]
+                frames = [{'frame_id': fid,
+                           'hex_id': ('0x%08X' if fid > 0x7FF else '0x%03X') % fid,
+                           'count': count}
+                          for fid, count in sorted(ids.items())]
+                result.append({'channel': channel, 'label': f'CAN Channel {channel}',
+                               'message_count': int(sum(ids.values())),
+                               'frame_count': len(ids), 'frames': frames})
+            with self._studio_catalog_lock:
+                self._studio_channel_cache[cache_key] = result
+            elapsed = time.monotonic() - started
+            self._push('studio-channel-scan-progress', percent=100, frames=frame_count,
+                       elapsed_s=elapsed, eta_s=0, result=f'{len(result)} 个通道',
+                       message=f'通道扫描完成：{frame_count:,} 帧，{len(result)} 个通道')
+            return result
+
+    def _studio_catalog_key(self, blf_path: str, channel_bindings: object):
+        try:
+            st = os.stat(blf_path)
+            meta = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            meta = (0, 0)
+        bindings = self._studio_normalize_bindings(channel_bindings)
+        return (str(Path(blf_path).resolve()), meta,
+                tuple((int(ch), tuple(paths)) for ch, paths in sorted(bindings.items())))
+
+    def _studio_catalog_signals_impl(self, blf_path: str, channel_bindings: object,
+                                     progress=None) -> dict:
         import can
         bindings, databases, errors = self._studio_load_bound_dbs(channel_bindings)
         observed = {}
         first_ts = last_ts = None
-        for msg in can.BLFReader(blf_path):
+        frame_count = 0
+        reader = can.BLFReader(blf_path)
+        for msg in reader:
             if first_ts is None:
                 first_ts = msg.timestamp
             last_ts = msg.timestamp
             channel = int(msg.channel) if msg.channel is not None else 0
             key = (channel, int(msg.arbitration_id))
             observed[key] = observed.get(key, 0) + 1
+            frame_count += 1
+            if progress is not None and frame_count % 10000 == 0:
+                total = max(int(getattr(reader, 'file_size', 0) or 0), 1)
+                progress(frame_count, min(99, int(reader.file.tell() * 100 / total)))
         signals, matched_ids = [], set()
         conflicts = []
         for (channel, frame_id), count in sorted(observed.items()):
@@ -933,11 +1001,119 @@ class WebviewAPI:
                 'dbc_paths': list(bindings.get(channel, [])),
                 'dbc_path': (bindings.get(channel) or [''])[0]})
         duration = float(last_ts-first_ts) if first_ts is not None and last_ts is not None else 0.0
-        return {'channels': channel_summary, 'signals': signals,
-                'errors': errors, 'conflicts': conflicts, 'duration': duration}
+        return {'channels': channel_summary, 'signals': signals, 'errors': errors,
+                'conflicts': conflicts, 'duration': duration, 'frame_count': frame_count}
+
+    def studio_catalog_signals(self, blf_path: str, channel_bindings: object) -> dict:
+        if not os.path.isfile(blf_path):
+            raise FileNotFoundError(blf_path)
+        key = self._studio_catalog_key(blf_path, channel_bindings)
+        with self._studio_catalog_lock:
+            cached = self._studio_catalog_cache.get(key)
+        if cached is not None:
+            return cached
+        result = self._studio_catalog_signals_impl(blf_path, channel_bindings)
+        with self._studio_catalog_lock:
+            self._studio_catalog_cache[key] = result
+        return result
+
+    def studio_start_catalog_scan(self, blf_path: str, channel_bindings: object) -> dict:
+        if not os.path.isfile(blf_path):
+            raise FileNotFoundError(blf_path)
+        key = self._studio_catalog_key(blf_path, channel_bindings)
+        with self._studio_catalog_lock:
+            cached = self._studio_catalog_cache.get(key)
+            if cached is not None:
+                self._push('studio-scan-progress', phase='cached', percent=100,
+                           frames=cached.get('frame_count', 0), elapsed_s=0, eta_s=0,
+                           cached=True, result=f'{len(cached.get("signals", []))} 个 Signal',
+                           message='已命中扫描缓存')
+                self._push('studio-scan-done', ok=True, catalog=cached)
+                return {'ok': True, 'cached': True}
+            if self._studio_scan_thread is not None and self._studio_scan_thread.is_alive():
+                return {'ok': True, 'running': True}
+
+            def worker():
+                try:
+                    import time
+                    started = time.monotonic()
+                    self._push('studio-scan-progress', phase='reading', percent=0,
+                               frames=0, elapsed_s=0, eta_s=None, message='正在扫描 BLF…')
+
+                    def report(frames, percent=-1):
+                        elapsed = time.monotonic() - started
+                        eta = elapsed * (100 - percent) / percent if percent > 0 else None
+                        self._push('studio-scan-progress', phase='reading', percent=percent,
+                                   frames=frames, elapsed_s=elapsed, eta_s=eta,
+                                   message=f'已扫描 {frames:,} 帧…')
+
+                    result = self._studio_catalog_signals_impl(
+                        blf_path, channel_bindings, report)
+                    with self._studio_catalog_lock:
+                        self._studio_catalog_cache[key] = result
+                    elapsed = time.monotonic() - started
+                    signal_count = len(result.get('signals', []))
+                    self._push('studio-scan-progress', phase='done', percent=100,
+                               frames=result.get('frame_count', 0), elapsed_s=elapsed, eta_s=0,
+                               result=f'{signal_count} 个 Signal',
+                               message=f'Signal 扫描完成：{signal_count} 个')
+                    self._push('studio-scan-done', ok=True, catalog=result)
+                except Exception as exc:
+                    self._push('studio-scan-done', ok=False, error=str(exc))
+
+            self._studio_scan_thread = threading.Thread(target=worker, daemon=True)
+            self._studio_scan_thread.start()
+        return {'ok': True, 'started': True}
+
+    def _studio_probe_key(self, video_path: str, blf_path: str,
+                          channel_bindings: object, track_signals: object):
+        import json
+
+        def fingerprint(path: str):
+            resolved = str(Path(path).resolve())
+            try:
+                stat = os.stat(resolved)
+                return resolved, stat.st_size, stat.st_mtime_ns
+            except OSError:
+                return resolved, 0, 0
+
+        bindings = self._studio_normalize_bindings(channel_bindings or {})
+        normalized_bindings = {str(key): list(value)
+                               for key, value in sorted(bindings.items())}
+        normalized_tracks = track_signals if isinstance(track_signals, dict) else {}
+        return (fingerprint(video_path), fingerprint(blf_path),
+                json.dumps(normalized_bindings, ensure_ascii=False, sort_keys=True),
+                json.dumps(normalized_tracks, ensure_ascii=False, sort_keys=True))
 
     def studio_probe(self, video_path: str, blf_path: str, channel_bindings: object = None,
                      track_signals: object = None) -> dict:
+        key = self._studio_probe_key(
+            video_path, blf_path, channel_bindings, track_signals)
+        # A duplicate caller waits for the active pass and then receives its
+        # cached result. Therefore only one BLFReader emits trajectory progress.
+        with self._studio_probe_lock:
+            cached = self._studio_probe_cache.get(key)
+            if cached is not None:
+                self._push('studio-probe-progress', percent=100,
+                           frames=cached['frames'], elapsed_s=0, eta_s=0,
+                           cached=True, result=cached['summary'],
+                           message='已恢复轨迹读取缓存')
+                return cached['data']
+            result = self._studio_probe_impl(
+                video_path, blf_path, channel_bindings, track_signals)
+            entry = {
+                'data': result,
+                'frames': result.get('_probe_frame_count', 0),
+                'summary': result.get('_probe_result', '轨迹已加载'),
+            }
+            self._studio_probe_cache[key] = entry
+            while len(self._studio_probe_cache) > 4:
+                self._studio_probe_cache.pop(next(iter(self._studio_probe_cache)))
+            return result
+
+    def _studio_probe_impl(self, video_path: str, blf_path: str,
+                           channel_bindings: object = None,
+                           track_signals: object = None) -> dict:
         if not os.path.isfile(video_path):
             raise FileNotFoundError(video_path)
         if not os.path.isfile(blf_path):
@@ -950,11 +1126,15 @@ class WebviewAPI:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         cap.release()
-        catalog = self.studio_catalog_signals(blf_path, channel_bindings or {})
+        catalog_key = self._studio_catalog_key(blf_path, channel_bindings or {})
+        with self._studio_catalog_lock:
+            catalog = self._studio_catalog_cache.get(catalog_key)
+        if catalog is None:
+            # Signal cataloguing is handled by the independent Signal page so
+            # opening Studio does not block on a full BLF pass.
+            catalog = {'channels': [], 'signals': [], 'errors': [],
+                       'conflicts': [], 'duration': 0.0}
         bindings, databases, errors = self._studio_load_bound_dbs(channel_bindings or {})
-        # Trace dictionaries are keyed by the persisted track config key.  The
-        # four names below remain only as backward-compatible defaults for old
-        # projects; custom tracks never use array indexes.
         traces = {'rpm': [], 'throttle': [], 'steering': [], 'yaw': []}
         next_keep = {key: -1.0 for key in traces}
         selected_tracks = {}
@@ -968,20 +1148,42 @@ class WebviewAPI:
                 if len(parts) != 4 or parts[0] != 'blf':
                     continue
                 try:
-                    selected_tracks[track] = (int(parts[1]), int(parts[2], 16), parts[3])
+                    selected_tracks[track] = (
+                        int(parts[1]), int(parts[2], 16), parts[3])
                     traces.setdefault(track, [])
                     next_keep.setdefault(track, -1.0)
                 except ValueError:
                     continue
         first_ts = last_ts = None
-        wheel_names = ('RL_ActualVelocity','RR_ActualVelocity',
-                       'FL_ActualVelocity','FR_ActualVelocity')
-        for msg in can.BLFReader(blf_path):
+        blf_frame_count = 0
+        wheel_names = ('RL_ActualVelocity', 'RR_ActualVelocity',
+                       'FL_ActualVelocity', 'FR_ActualVelocity')
+        selected_pairs = {(ch, frame_id)
+                          for ch, frame_id, _signal in selected_tracks.values()}
+        import time
+        probe_started = time.monotonic()
+        self._push('studio-probe-progress', percent=0, frames=0,
+                   elapsed_s=0, eta_s=None, message='正在读取 BLF 波形…')
+        reader = can.BLFReader(blf_path)
+        for msg in reader:
+            blf_frame_count += 1
+            if blf_frame_count % 10000 == 0:
+                total = max(int(getattr(reader, 'file_size', 0) or 0), 1)
+                percent = min(99, int(reader.file.tell() * 100 / total))
+                elapsed_wall = time.monotonic() - probe_started
+                eta_s = (elapsed_wall * (100 - percent) / percent
+                         if percent > 0 else None)
+                self._push('studio-probe-progress', percent=percent,
+                           frames=blf_frame_count, elapsed_s=elapsed_wall,
+                           eta_s=eta_s,
+                           message=f'正在读取 BLF 波形… {blf_frame_count:,} 帧')
             if first_ts is None:
                 first_ts = msg.timestamp
             last_ts = msg.timestamp
             elapsed = float(msg.timestamp-first_ts)
             channel = int(msg.channel) if msg.channel is not None else 0
+            if selected_pairs and (channel, int(msg.arbitration_id)) not in selected_pairs:
+                continue
             decoded = None
             for _dbc_path, db in databases.get(channel) or []:
                 try:
@@ -992,30 +1194,49 @@ class WebviewAPI:
             if decoded is None:
                 continue
             for track, (wanted_channel, wanted_id, wanted_signal) in selected_tracks.items():
-                if (channel == wanted_channel and int(msg.arbitration_id) == wanted_id
-                        and elapsed >= next_keep[track] and wanted_signal in decoded):
+                if (channel == wanted_channel and
+                        int(msg.arbitration_id) == wanted_id and
+                        elapsed >= next_keep[track] and
+                        wanted_signal in decoded):
                     value = decoded[wanted_signal]
                     if isinstance(value, (int, float)):
                         traces[track].append([elapsed, float(value)])
                         next_keep[track] = elapsed + .05
-            if 'throttle' not in selected_tracks and elapsed >= next_keep['throttle'] and 'APS_OpenPct' in decoded:
-                traces['throttle'].append([elapsed,float(decoded['APS_OpenPct'])])
-                next_keep['throttle']=elapsed+.05
-            if 'steering' not in selected_tracks and elapsed >= next_keep['steering'] and 'SteeringWheelAngle' in decoded:
-                traces['steering'].append([elapsed,float(decoded['SteeringWheelAngle'])])
-                next_keep['steering']=elapsed+.05
-            if 'yaw' not in selected_tracks and elapsed >= next_keep['yaw'] and 'CDC_YawRate' in decoded:
-                traces['yaw'].append([elapsed,float(decoded['CDC_YawRate'])])
-                next_keep['yaw']=elapsed+.05
-            values=[abs(float(decoded[name])) for name in wheel_names if name in decoded]
-            if 'rpm' not in selected_tracks and len(values)==4 and elapsed >= next_keep['rpm']:
-                traces['rpm'].append([elapsed,sum(values)/4.0])
-                next_keep['rpm']=elapsed+.05
-        for key, points in traces.items():
-            if len(points)>2400:
-                traces[key]=points[::max(1,len(points)//2400)]
-        duration=float(last_ts-first_ts) if first_ts is not None and last_ts is not None else 0.0
-        video_duration=frames/fps if fps>0 else 0.0
+            if ('throttle' not in selected_tracks and
+                    elapsed >= next_keep['throttle'] and
+                    'APS_OpenPct' in decoded):
+                traces['throttle'].append([elapsed, float(decoded['APS_OpenPct'])])
+                next_keep['throttle'] = elapsed + .05
+            if ('steering' not in selected_tracks and
+                    elapsed >= next_keep['steering'] and
+                    'SteeringWheelAngle' in decoded):
+                traces['steering'].append(
+                    [elapsed, float(decoded['SteeringWheelAngle'])])
+                next_keep['steering'] = elapsed + .05
+            if ('yaw' not in selected_tracks and
+                    elapsed >= next_keep['yaw'] and 'CDC_YawRate' in decoded):
+                traces['yaw'].append([elapsed, float(decoded['CDC_YawRate'])])
+                next_keep['yaw'] = elapsed + .05
+            values = [abs(float(decoded[name]))
+                      for name in wheel_names if name in decoded]
+            if ('rpm' not in selected_tracks and len(values) == 4 and
+                    elapsed >= next_keep['rpm']):
+                traces['rpm'].append([elapsed, sum(values) / 4.0])
+                next_keep['rpm'] = elapsed + .05
+        for track_key, points in traces.items():
+            if len(points) > 2400:
+                traces[track_key] = points[::max(1, len(points)//2400)]
+        duration = (float(last_ts-first_ts)
+                    if first_ts is not None and last_ts is not None else 0.0)
+        elapsed_wall = time.monotonic() - probe_started
+        point_count = sum(len(points) for track_key, points in traces.items()
+                          if track_key in selected_tracks)
+        summary = f'{len(selected_tracks)} 条轨迹 · {point_count:,} 个采样点'
+        self._push('studio-probe-progress', percent=100,
+                   frames=blf_frame_count, elapsed_s=elapsed_wall, eta_s=0,
+                   result=summary,
+                   message=f'轨迹已加载：{blf_frame_count:,} 帧')
+        video_duration = frames/fps if fps > 0 else 0.0
         return {'video': {'path': video_path, 'name': Path(video_path).name,
                           'duration': video_duration, 'fps': fps,
                           'width': width, 'height': height},
@@ -1023,11 +1244,13 @@ class WebviewAPI:
                         'duration': duration},
                 'traces': traces, 'channels': catalog['channels'],
                 'signals': catalog['signals'],
-                'dbc_bindings': {str(k): list(v) for k,v in bindings.items()},
-                'track_signals': {str(key): value for key, value in requested_tracks.items()},
+                'dbc_bindings': {str(k): list(v) for k, v in bindings.items()},
+                'track_signals': {str(key): value
+                                  for key, value in requested_tracks.items()},
                 'errors': catalog['errors']+errors,
-                'conflicts': catalog.get('conflicts', [])}
-
+                'conflicts': catalog.get('conflicts', []),
+                '_probe_frame_count': blf_frame_count,
+                '_probe_result': summary}
     def start_studio_export(self, params: dict) -> dict:
         with self._thread_lock:
             if self._studio_export_thread and self._studio_export_thread.is_alive():

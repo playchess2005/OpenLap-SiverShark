@@ -70,16 +70,26 @@ def _cache_busted_html() -> Path:
     import re
     from _version import __version__
 
+    # In source mode, include frontend mtimes so a restart always loads the
+    # latest JS/CSS instead of a stale WebView2 V8 cache entry.
+    cache_version = __version__
+    if not getattr(sys, 'frozen', False):
+        try:
+            assets = [FRONTEND_HTML] + list((FRONTEND_DIR / 'js').rglob('*.js')) + list((FRONTEND_DIR / 'css').rglob('*.css'))
+            cache_version = f'{__version__}-{max(p.stat().st_mtime_ns for p in assets)}'
+        except (OSError, ValueError):
+            pass
+
     try:
         html = FRONTEND_HTML.read_text(encoding='utf-8')
 
         def _bust(m: re.Match) -> str:
             attr, url = m.group(1), m.group(2)
             sep = '&' if '?' in url else '?'
-            return f'{attr}="{url}{sep}v={__version__}"'
+            return f'{attr}="{url}{sep}v={cache_version}"'
 
         busted = re.sub(r'(src|href)="((?:js|css)/[^"]+)"', _bust, html)
-        out_path = FRONTEND_DIR / f'.index_v{__version__}.html'
+        out_path = FRONTEND_DIR / f'.index_v{cache_version}.html'
         out_path.write_text(busted, encoding='utf-8')
         _cleanup_stale_cache_busted_html(out_path)
         return out_path

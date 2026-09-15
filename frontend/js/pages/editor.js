@@ -127,6 +127,60 @@
     return DATA_CHANNELS.concat(_extraChannelOptions(), _blfChannelOptions());
   }
 
+  function _signalSearchHtml(targetIds, placeholder = '搜索 Signal 名称 / CAN ID…') {
+    return '<div class="signal-source-search-wrap">' +
+      '<input type="search" class="signal-source-search" data-signal-filter="' +
+      _esc(targetIds.join(',')) + '" placeholder="' + _esc(placeholder) +
+      '" autocomplete="off" spellcheck="false">' +
+      '<span class="signal-source-search-count">全部</span></div>';
+  }
+
+  function _bindSignalSourceSearch(panel) {
+    panel.querySelectorAll('[data-signal-filter]').forEach(input => {
+      const selects = String(input.dataset.signalFilter || '')
+        .split(',')
+        .map(id => panel.querySelector('#' + id.trim()))
+        .filter(Boolean);
+      const countNode = input.parentElement?.querySelector('.signal-source-search-count');
+
+      const applyFilter = () => {
+        const query = input.value.trim().toLocaleLowerCase();
+        let visibleCount = 0;
+        selects.forEach((select, selectIndex) => {
+          let selectVisibleCount = 0;
+          Array.from(select.options).forEach(option => {
+            const groupLabel = option.parentElement?.label || '';
+            const haystack = [option.textContent, option.value, groupLabel]
+              .join(' ')
+              .toLocaleLowerCase();
+            option.hidden = Boolean(query) && !haystack.includes(query);
+            option.style.display = option.hidden ? 'none' : '';
+            if (!option.hidden) selectVisibleCount += 1;
+          });
+          if (selectIndex === 0) visibleCount = selectVisibleCount;
+          select.querySelectorAll('optgroup').forEach(group => {
+            group.hidden = Array.from(group.querySelectorAll('option'))
+              .every(option => option.hidden);
+            group.style.display = group.hidden ? 'none' : '';
+          });
+        });
+        input.classList.toggle('signal-source-search-empty', Boolean(query) && visibleCount === 0);
+        if (countNode) countNode.textContent = query ? `${visibleCount} 项` : '全部';
+        input.title = query
+          ? (visibleCount ? `${visibleCount} matching Signal(s)` : 'No matching Signal')
+          : 'Type to filter Signal sources';
+      };
+
+      input.addEventListener('input', applyFilter);
+      input.addEventListener('search', applyFilter);
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          input.value = '';
+          applyFilter();
+        }
+      });
+    });
+  }
   // Label lookup for a channel key — fixed list first, falling back to the
   // dynamic channel list, then the raw key itself.
   function _channelLabel(ch) {
@@ -394,8 +448,14 @@
     if (type === 'Wheel Torque') {
       const keys = {FL: gauge?.fl_channel || 'Torque_FL', FR: gauge?.fr_channel || 'Torque_FR',
         RL: gauge?.rl_channel || 'Torque_RL', RR: gauge?.rr_channel || 'Torque_RR'};
-      const out = { theme };
-      Object.keys(keys).forEach(k => { out[k] = Number(p[keys[k]] ?? 0); });
+      const errorKeys = {FL: gauge?.fl_error_channel || '', FR: gauge?.fr_error_channel || '',
+        RL: gauge?.rl_error_channel || '', RR: gauge?.rr_error_channel || ''};
+      const out = { theme, error_signal_bound: {}, errors: {} };
+      Object.keys(keys).forEach(k => {
+        out[k] = Number(p[keys[k]] ?? 0);
+        out.error_signal_bound[k] = Boolean(errorKeys[k]);
+        out.errors[k] = errorKeys[k] ? Number(p[errorKeys[k]] ?? 0) : 0;
+      });
       return out;
     }
     if (type === 'Info') {
@@ -1360,6 +1420,7 @@
       const opts = _channelGroups(_allChannelOptions());
       return '<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px;">' +
         '<div style="font-size:9px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;">Signal Source</div>' +
+        _signalSearchHtml(['pedal-throttle-channel', 'pedal-brake-channel']) +
         '<label class="form-row"><span class="form-label">Throttle</span><select id="pedal-throttle-channel" style="flex:1">' + opts + '</select></label>' +
         '<label class="form-row"><span class="form-label">Brake</span><select id="pedal-brake-channel" style="flex:1">' + opts + '</select></label></div>';
     }
@@ -1368,7 +1429,10 @@
       const opts = _channelGroups(_allChannelOptions());
       return '<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px;">' +
         '<div style="font-size:9px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;">Signal Source</div>' +
+        _signalSearchHtml(['torque-fl-channel', 'torque-fr-channel', 'torque-rl-channel', 'torque-rr-channel', 'torque-fl-error-channel', 'torque-fr-error-channel', 'torque-rl-error-channel', 'torque-rr-error-channel']) +
         ['FL','FR','RL','RR'].map(k => '<label class="form-row"><span class="form-label">' + k + '</span><select id="torque-' + k.toLowerCase() + '-channel" style="flex:1">' + opts + '</select></label>').join('') +
+        ['FL','FR','RL','RR'].map(k => '<label class="form-row"><span class="form-label">' + k + ' Error</span><select id="torque-' + k.toLowerCase() + '-error-channel" style="flex:1"><option value="">None</option>' + opts + '</select></label>').join('') +
+        '<div class="form-hint">每个轮子独立绑定 Error Signal：非 0 红色，0 绿色</div>' +
         '</div>';
     }
 
@@ -1490,6 +1554,14 @@
         const key = id + '_channel';
         const sel = panel.querySelector('#torque-' + id + '-channel');
         if (sel) { sel.value = g[key] || 'Torque_' + id.toUpperCase(); sel.addEventListener('change', () => { g[key] = sel.value; rebuildGaugeCanvases(); saveLayout(); }); }
+      });
+      ['fl','fr','rl','rr'].forEach(id => {
+        const key = id + '_error_channel';
+        const errorSel = panel.querySelector('#torque-' + id + '-error-channel');
+        if (errorSel) {
+          errorSel.value = g[key] || '';
+          errorSel.addEventListener('change', () => { g[key] = errorSel.value; rebuildGaugeCanvases(); saveLayout(); });
+        }
       });
     }
 
@@ -1778,6 +1850,7 @@
           </optgroup>`
         : (DATA_CHANNELS.some(c => c.value === g.channel) ? '' : `<option value="${_esc(g.channel)}" selected>${_esc(g.channel)}</option>`);
       channelPickerHtml = `
+        ${_signalSearchHtml(['prop-channel'])}
         <div class="form-row">
           <span class="form-label">Signal Source</span>
           <select id="prop-channel" style="flex:1">
@@ -1908,6 +1981,7 @@
     });
 
     _bindChannelPropEvents(panel, g);
+    _bindSignalSourceSearch(panel);
   }
 
   // ── Gauge list (left sidebar) ───────────────────────────────────────────────
@@ -1971,7 +2045,7 @@
     if (type === 'Info')       return { selected_fields: ['track','datetime','vehicle','weather','wind'], info_overrides: {} };
     if (type === 'Multi-Line') return { multi_channels: ['speed', 'gforce_lat'] };
     if (type === 'Pedals') return { throttle_channel: 'APS_OpenPct', brake_channel: 'BrakePct' };
-    if (type === 'Wheel Torque') return { fl_channel: 'Torque_FL', fr_channel: 'Torque_FR', rl_channel: 'Torque_RL', rr_channel: 'Torque_RR' };
+    if (type === 'Wheel Torque') return { fl_channel: 'Torque_FL', fr_channel: 'Torque_FR', rl_channel: 'Torque_RL', rr_channel: 'Torque_RR', fl_error_channel: '', fr_error_channel: '', rl_error_channel: '', rr_error_channel: '' };
     if (type === 'Image')      return { image_path: '', opacity: 1.0, fit: 'contain' };
     if (type === 'Circuit' || type === 'Zoomed') return { zoom_radius_m: 150, show_ref: true };
     return {};

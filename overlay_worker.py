@@ -151,6 +151,15 @@ def render_frame_worker(args: Tuple) -> bytes:
                 'FR': float(last.get(g.get('fr_channel', 'Torque_FR'), 0.0)),
                 'RL': float(last.get(g.get('rl_channel', 'Torque_RL'), 0.0)),
                 'RR': float(last.get(g.get('rr_channel', 'Torque_RR'), 0.0)),
+                'errors': {
+                    key: float(last.get(g.get(key.lower() + '_error_channel', ''), 0.0))
+                    if g.get(key.lower() + '_error_channel') else 0.0
+                    for key in ('FL', 'FR', 'RL', 'RR')
+                },
+                'error_signal_bound': {
+                    key: bool(g.get(key.lower() + '_error_channel'))
+                    for key in ('FL', 'FR', 'RL', 'RR')
+                },
                 '_theme': theme,
             }
             try:

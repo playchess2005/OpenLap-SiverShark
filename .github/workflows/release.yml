@@ -23,10 +23,9 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install pywebview opencv-python pillow numpy pandas matplotlib
-          # Keep in sync with pyproject.toml's [racebox-download] pin — the
-          # exe bundles the Chromium revision this exact version expects.
-          pip install playwright==1.58.0 pyinstaller
+          # Install the application and the same optional dependencies bundled
+          # by the desktop release. This keeps CI in sync with pyproject.toml.
+          pip install -e ".[package,racebox-download]"
         shell: pwsh
 
       - name: Install Playwright Chromium
@@ -64,6 +63,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: RELEASE_NOTES.md
           files: |
             OpenLap-${{ github.ref_name }}-windows.zip
             installer\Output\OpenLap-Setup-*.exe

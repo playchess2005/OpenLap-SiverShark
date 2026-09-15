@@ -18,6 +18,8 @@ def render(data: dict, w: int, h: int):
     edge = theme.get('bg_edge_rgba', (1.0, 1.0, 1.0, 0.14))
     muted = theme.get('label', '#93a2b1')
     positive, negative = '#45d32f', '#ff8b2d'
+    errors = data.get('errors') or {}
+    error_bindings = data.get('error_signal_bound') or {}
 
     sc = scale_factor(w, h, base_w=330, base_h=260)
     fig = plt.figure(figsize=(w / 100, h / 100), dpi=100)
@@ -58,7 +60,9 @@ def render(data: dict, w: int, h: int):
         'RL': (0.31, 0.24), 'RR': (0.64, 0.24),
     }
     for key, (x, y) in wheels.items():
-        colour = positive if values[key] >= 0 else negative
+        error_bound = bool(error_bindings.get(key)) if isinstance(error_bindings, dict) else bool(error_bindings)
+        error_active = error_bound and abs(float(errors.get(key, 0.0))) > 0.5
+        colour = ('#ef4444' if error_active else '#45d32f') if error_bound else (positive if values[key] >= 0 else negative)
         ax.add_patch(FancyBboxPatch(
             (x, y), 0.05, 0.13, boxstyle='round,pad=0.005',
             facecolor=colour, edgecolor='none', alpha=0.92))
@@ -68,7 +72,9 @@ def render(data: dict, w: int, h: int):
         'RL': (0.08, 0.32, 'left'), 'RR': (0.92, 0.32, 'right'),
     }
     for key, (x, y, align) in text_pos.items():
-        colour = positive if values[key] >= 0 else negative
+        error_bound = bool(error_bindings.get(key)) if isinstance(error_bindings, dict) else bool(error_bindings)
+        error_active = error_bound and abs(float(errors.get(key, 0.0))) > 0.5
+        colour = ('#ef4444' if error_active else '#45d32f') if error_bound else (positive if values[key] >= 0 else negative)
         ax.text(x, y + 0.075, key, ha=align, va='center',
                 color=muted, fontsize=fs_label, fontweight='bold')
         value_text = ax.text(

@@ -54,7 +54,7 @@ def load_overlay_layout():
 
 def selected_raw_signals(layout):
     fields = ("channel", "throttle_channel", "brake_channel",
-              "fl_channel", "fr_channel", "rl_channel", "rr_channel")
+              "fl_channel", "fr_channel", "rl_channel", "rr_channel", "fl_error_channel", "fr_error_channel", "rl_error_channel", "rr_error_channel")
     keys = set()
     for gauge in layout.get("gauges", []):
         for field in fields:
@@ -410,29 +410,51 @@ def find_best_offset(gps, offset0):
 def main():
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-    os.environ.setdefault("FFMPEG_BIN", str(WORKSPACE / ".venv" / "Lib" / "site-packages" / "imageio_ffmpeg" / "binaries" / "ffmpeg-win-x86_64-v7.1.exe"))
+    # Source installs use imageio-ffmpeg's bundled executable, so users do not
+    # need a system-wide FFmpeg or a machine-specific hard-coded path. An
+    # explicit valid FFMPEG_BIN still wins.
+    configured_ffmpeg = os.environ.get("FFMPEG_BIN", "")
+    if not configured_ffmpeg or not Path(configured_ffmpeg).is_file():
+        try:
+            import imageio_ffmpeg
+            bundled_ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+            if bundled_ffmpeg and Path(bundled_ffmpeg).is_file():
+                os.environ["FFMPEG_BIN"] = bundled_ffmpeg
+                print("FFmpeg:", bundled_ffmpeg)
+        except Exception as exc:
+            print(f"WARNING: bundled FFmpeg unavailable: {exc}")
 
-    gps, gpsu_first = extract_video_gps()
-    print("video GPS samples:", len(gps["t"]), "first GPSU:", gpsu_first)
-    print("video GPS speed range m/s:", float(np.nanmin(gps["spd2_mps"])), float(np.nanmax(gps["spd2_mps"])))
+    gps = None
+    gpsu_first = None
+    try:
+        candidate_gps, candidate_gpsu = extract_video_gps()
+        if candidate_gpsu and len(candidate_gps.get("t", [])) >= 2:
+            gps, gpsu_first = candidate_gps, candidate_gpsu
+            print("video GPS samples:", len(gps["t"]), "first GPSU:", gpsu_first)
+            print("video GPS speed range m/s:", float(np.nanmin(gps["spd2_mps"])), float(np.nanmax(gps["spd2_mps"])))
+        else:
+            print("WARNING: video has no usable GPMF GPS samples; continuing with BLF-only telemetry")
+    except (ValueError, IndexError) as exc:
+        print(f"WARNING: {exc}; continuing with BLF-only telemetry")
 
-    # rough offset using GPSU, then full BLF signal extraction around driving window
+    # Read the BLF clock first. A manual Studio offset is sufficient even when
+    # the source video has no GoPro GPMF/GPS metadata track.
     reader0 = can.BLFReader(str(BLF))
     first_msg = next(iter(reader0))
     blf_start = first_msg.timestamp
     reader0.stop() if hasattr(reader0, "stop") else None
-    offset0 = compute_offset_blf(blf_start, gpsu_first)
-    # TSMaster's displayed cursor is ~5.844 s ahead of python-can's BLF
-    # elapsed clock. Verified anchor: TSMaster 1884.987 s (Debug5
-    # [32, 33, 6, 21], APS=29.4%) == BLF elapsed 1879.143 s.
-    # The driving video begins moving at ~21.000 s.
     offset_setting = os.environ.get("OL_BLF_OFFSET", "1858.143").strip()
     if offset_setting.lower() == "auto":
+        if gps is None or gpsu_first is None:
+            raise ValueError(
+                "automatic BLF alignment requires a video GPMF/GPS track; "
+                "set a manual BLF offset/keyframe alignment in Studio")
+        offset0 = compute_offset_blf(blf_start, gpsu_first)
         offset_blf = find_best_offset(gps, offset0)
         offset_source = "automatic whole-run correlation"
     else:
         offset_blf = float(offset_setting)
-        offset_source = "manual anchor: video 21.000s = BLF elapsed 1879.143s (TSMaster 1884.987s)"
+        offset_source = "manual Studio BLF offset"
     print("offset source:", offset_source)
     print(f"BLF start naive: {blf_start:.6f}, offset_blf(video0): {offset_blf:.6f}s")
 
@@ -503,18 +525,30 @@ def main():
             motor_grids.append(np.interp(blf_grid, np.asarray(t, dtype=float), np.asarray(v, dtype=float)))
     rpm = np.mean([np.abs(m) for m in motor_grids], axis=0) if motor_grids else np.zeros_like(blf_grid)
 
-    # Video GPS aligned to video-time grid
-    gps_lat = np.interp(grid, gps["t"], gps["lat"])
-    gps_lon = np.interp(grid, gps["t"], gps["lon"])
-    gps_alt = np.interp(grid, gps["t"], gps["alt"])
-    gps_spd2 = np.interp(grid, gps["t"], gps["spd2_mps"])
-    speed_kmh = np.clip(gps_spd2 * 3.6, 0.0, None)
+    if gps is not None:
+        # Video GPS aligned to the video-time grid.
+        gps_lat = np.interp(grid, gps["t"], gps["lat"])
+        gps_lon = np.interp(grid, gps["t"], gps["lon"])
+        gps_alt = np.interp(grid, gps["t"], gps["alt"])
+        gps_spd2 = np.interp(grid, gps["t"], gps["spd2_mps"])
+        speed_kmh = np.clip(gps_spd2 * 3.6, 0.0, None)
 
-    # actual UTC datetime of video zero (GPSU first + 0)
-    yy = 2000 + int(gpsu_first[0:2]); mo = int(gpsu_first[2:4]); dd = int(gpsu_first[4:6])
-    hh = int(gpsu_first[6:8]); mi = int(gpsu_first[8:10]); ss = int(gpsu_first[10:12])
-    frac = int(gpsu_first[13:16]) if len(gpsu_first) >= 16 else 0
-    video0_utc = datetime.datetime(yy, mo, dd, hh, mi, ss, frac * 1000, tzinfo=datetime.timezone.utc)
+        # Actual UTC datetime of video zero from GoPro GPSU.
+        yy = 2000 + int(gpsu_first[0:2]); mo = int(gpsu_first[2:4]); dd = int(gpsu_first[4:6])
+        hh = int(gpsu_first[6:8]); mi = int(gpsu_first[8:10]); ss = int(gpsu_first[10:12])
+        frac = int(gpsu_first[13:16]) if len(gpsu_first) >= 16 else 0
+        video0_utc = datetime.datetime(yy, mo, dd, hh, mi, ss, frac * 1000, tzinfo=datetime.timezone.utc)
+    else:
+        # Ordinary/transcoded videos may have no GPMF track. BLF-bound gauges
+        # still export normally; only GPS-derived speed, altitude and map data
+        # are unavailable.
+        gps_lat = np.zeros_like(grid)
+        gps_lon = np.zeros_like(grid)
+        gps_alt = np.zeros_like(grid)
+        speed_kmh = np.zeros_like(grid)
+        video0_utc = datetime.datetime.fromtimestamp(
+            blf_start + offset_blf, tz=datetime.timezone.utc)
+        print("GPS-derived speed/altitude/map data unavailable for this video")
 
     from data_model import DataPoint, Lap, Session
 

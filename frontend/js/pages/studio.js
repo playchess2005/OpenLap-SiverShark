@@ -7,13 +7,18 @@
   let raf = null, videoPort = 0, exporting = false;
   let exportProgress = 0;
   let unlisten = [], mountGen = 0, lastVideoTime = 0, loadedMediaKey = '';
+  // Keep one trajectory request alive across Studio -> Overlay -> Studio.
+  let probePromise = null, probePromiseKey = '';
   let resizeObserver = null;
   let activeTrack = 'steering';
+  let timelineView = {start: 0, end: 1, initialized: false};
+  let timelineDrag = null, timelineClickTimer = null, timelineSuppressClick = false;
+  let selectedTimelineKeyframe = null;
   let project = {
     video_path: '', blf_path: '', output_path: '',
     global_offset_s: 0, steering_offset_s: 0, yaw_offset_s: 0,
     start_s: 0, end_s: 0, workers: 8,
-    dbc_bindings: {}, channels: [], signals: [], track_signals: {}, track_configs: [],
+    dbc_bindings: {}, channels: [], signals: [], track_signals: {}, track_configs: [], timeline_keyframes: [],
   };
   const tracks = [
     {key:'rpm', label:'四轮转速', icon:'◉', color:'#00d4ff'},
@@ -85,8 +90,7 @@
         <div class="studio-workspace">
           <aside class="studio-toolrail">
             <div class="studio-rail-title">工具</div>
-            ${tracks.map(t => `<button class="studio-tool ${t.key===activeTrack?'active':''}"
-              data-track="${t.key}" title="${t.label}"><b>${t.icon}</b><span>${t.label}</span></button>`).join('')}
+            <div class="studio-rail-note">轨迹由下方 Signal 列表自由选择</div>
             <div class="studio-rail-sep"></div>
             <button class="studio-tool" data-gauge="Steering"><b>◉</b><span>方向盘模型</span></button>
             <button class="studio-tool" data-gauge="Pedals"><b>▱</b><span>踏板曲线</span></button>
@@ -118,10 +122,11 @@
               <input id="st-scrub" type="range" min="0" max="1" step=".001" value="0">
             </div>
             <div class="studio-track-manager" id="st-track-manager">
-              <div class="studio-track-manager-head"><strong>轨迹曲线</strong><button class="btn btn-sm" id="st-toggle-tracks">展开选择 Signal</button></div>
-              <div class="studio-track-manager-body" id="st-track-manager-body" style="display:none"></div>
+              <div class="studio-track-manager-head"><strong>轨迹曲线</strong><span class="studio-muted">从扫描到的 BLF Signal 中选择并自定义名称</span><button class="btn btn-sm btn-accent" id="st-open-signals">选择 Signal</button></div>
+              <div class="studio-track-manager-body" id="st-track-manager-body"></div>
             </div>
             <div class="studio-timeline">
+              <div class="studio-timeline-toolbar"><strong>BLF 时间轴</strong><span id="st-timeline-range" class="studio-muted"></span><button class="btn btn-sm" data-timeline-zoom="out">−</button><button class="btn btn-sm" data-timeline-zoom="reset">全局</button><button class="btn btn-sm" data-timeline-zoom="in">+</button><button class="btn btn-sm btn-accent" id="st-align-keyframe" disabled>对齐关键帧</button><span class="studio-muted">单击黄点选择 · 对齐关键帧使白线重合 · 双击添加/删除 · 右键删除</span></div>
               <canvas id="st-timeline"></canvas>
               <div class="studio-track-legend" id="st-track-legend"></div>
             </div>
@@ -145,6 +150,11 @@
             <button class="btn btn-accent studio-next" id="st-next-overlay">保存对齐并进入 Overlay 添加卡片</button>
             <div class="studio-progress" id="st-progress-wrap"><div id="st-progress-bar"></div></div>
             <div id="st-progress-label" class="studio-progress-label">导出进度：未开始</div>
+            <div class="studio-probe-progress" id="st-probe-progress" hidden>
+              <div class="studio-probe-head"><span>BLF 轨迹读取</span><b id="st-probe-percent">0%</b></div>
+              <div class="studio-probe-bar"><div id="st-probe-bar"></div></div>
+              <div id="st-probe-label" class="studio-probe-label">准备读取…</div>
+            </div>
             <div id="st-status">就绪</div>
             <details id="st-export-details" class="studio-export-details" hidden>
               <summary>查看导出详情</summary>
@@ -165,6 +175,25 @@
     project.output_path = root.querySelector('#st-output')?.value || '';
   }
   function setStatus(s) { const el=root?.querySelector('#st-status'); if(el) el.textContent=s; }
+  function fmtWait(seconds) {
+    const value = Math.max(0, Number(seconds) || 0);
+    if (value < 60) return Math.ceil(value) + ' 秒';
+    const minutes = Math.floor(value / 60), rest = Math.ceil(value % 60);
+    return minutes + ' 分 ' + rest + ' 秒';
+  }
+  function setProbeProgress(e = {}) {
+    const wrap = root?.querySelector('#st-probe-progress'), bar = root?.querySelector('#st-probe-bar');
+    const percentEl = root?.querySelector('#st-probe-percent'), label = root?.querySelector('#st-probe-label');
+    if (!wrap || !bar || !percentEl || !label) return;
+    const percent = Math.max(0, Math.min(100, Number(e.percent) || 0));
+    wrap.hidden = false; wrap.classList.toggle('is-done', percent >= 100); wrap.classList.toggle('is-failed', !!e.failed);
+    bar.style.width = percent + '%'; percentEl.textContent = percent.toFixed(percent < 10 && percent > 0 ? 1 : 0) + '%';
+    const frames = Number(e.frames || 0), elapsed = Number(e.elapsed_s || 0), eta = Number(e.eta_s);
+    const parts = []; if (frames) parts.push(frames.toLocaleString() + ' 帧'); if (elapsed) parts.push('已用 ' + fmtWait(elapsed));
+    if (Number.isFinite(eta) && eta > 0 && percent < 100) parts.push('预计还需 ' + fmtWait(eta));
+    if (e.result) parts.push(e.result); else if (percent >= 100) parts.push('轨迹已加载');
+    label.textContent = parts.join(' · ') || (e.message || '准备读取…');
+  }
   function setExportLogs(logs) {
     const details=root?.querySelector('#st-export-details'), out=root?.querySelector('#st-export-logs');
     if(!details||!out)return;
@@ -215,33 +244,11 @@
     const box = root?.querySelector('#st-track-manager-body');
     if (!box) return;
     const configs = normalizeTrackConfigs();
-    const selected = new Set(configs.filter(t => t.signal).map(t => t.signal));
-    const options = (project.signals || []).map(s => {
-      const text = 'CH' + s.channel + ' · ' + s.label + (s.unit ? ' [' + s.unit + ']' : '');
-      return '<label class="studio-signal-option" data-signal-text="' + esc(text.toLowerCase()) + '"><input type="checkbox" data-track-signal="' + esc(s.key) + '"' + (selected.has(s.key) ? ' checked' : '') + '><span>' + esc(text) + '</span></label>';
-    }).join('');
     const chosen = configs.filter(t => t.signal).map(t => {
       const info = signalInfo(t.signal);
       return '<div class="studio-track-config" data-track-config="' + esc(t.key) + '"><input data-track-label-key="' + esc(t.key) + '" value="' + esc(t.label || '') + '" placeholder="轨迹名称"><span class="studio-track-signal" title="' + esc(t.signal) + '">' + esc(info?.label || t.signal) + '</span><button class="btn btn-sm" data-track-remove-key="' + esc(t.key) + '">删除</button></div>';
     }).join('');
-    box.innerHTML = '<input class="studio-track-search" data-track-search type="search" placeholder="搜索 Signal…"><div class="studio-signal-options" data-track-options>' + (options || '<span class="studio-muted">载入 BLF 和 DBC 后可选择 Signal</span>') + '</div><div class="studio-track-selected"><div class="studio-track-selected-title">已选择轨迹</div>' + (chosen || '<span class="studio-muted">尚未选择轨迹</span>') + '</div>';
-    const search = box.querySelector('[data-track-search]');
-    if (search) search.oninput = () => {
-      const q = search.value.trim().toLowerCase();
-      box.querySelectorAll('.studio-signal-option').forEach(row => { row.style.display = !q || row.dataset.signalText.includes(q) ? '' : 'none'; });
-    };
-    box.querySelectorAll('[data-track-signal]').forEach(input => input.onchange = async () => {
-      const signal = input.dataset.trackSignal;
-      if (input.checked) {
-        if (!project.track_configs.some(t => t.signal === signal)) {
-          const info = signalInfo(signal);
-          project.track_configs.push({key: newTrackKey(signal, project.track_configs.length), label: info?.label || '轨迹', color: trackColors[project.track_configs.length % trackColors.length], signal});
-        }
-      } else {
-        project.track_configs = project.track_configs.filter(t => t.signal !== signal);
-      }
-      syncTrackSignals(); loadedMediaKey = ''; await save(); renderTrackPickers(); renderTrackLegend(); await load();
-    });
+    box.innerHTML = '<div class="studio-track-selected-title">已选择轨迹（' + configs.filter(t => t.signal).length + '）</div>' + (chosen || '<span class="studio-muted">尚未选择轨迹，请点击上方“选择 Signal”</span>');
     box.querySelectorAll('[data-track-label-key]').forEach(input => input.onchange = async () => {
       const config = project.track_configs.find(t => t.key === input.dataset.trackLabelKey);
       if (config) config.label = input.value || '轨迹';
@@ -316,7 +323,12 @@
     renderBindings();
     renderTrackPickers();
     await save();
-    setStatus('\u5df2\u53d1\u73b0 ' + project.channels.length + ' \u4e2a BLF \u901a\u9053\uff0c\u8bf7\u9010\u901a\u9053\u6dfb\u52a0 DBC');
+    const hasBindings = Object.values(project.dbc_bindings || {}).some(v => Array.isArray(v) ? v.length : !!v);
+    if (hasBindings) {
+      await refreshCatalog();
+    } else {
+      setStatus('\u5df2\u53d1\u73b0 ' + project.channels.length + ' \u4e2a BLF \u901a\u9053/CAN ID\uff1b\u8bf7\u6dfb\u52a0 DBC \u540e\u52fe\u9009 Signal');
+    }
   }
 
   async function pick(kind) {
@@ -329,7 +341,7 @@
     project[kind + '_path'] = path;
     if (kind === 'blf' && path !== current) {
       project.dbc_bindings = {}; project.channels = []; project.signals = [];
-      project.track_signals = {}; probe = null; loadedMediaKey = '';
+      project.track_signals = {}; project.track_configs = []; probe = null; loadedMediaKey = '';
     }
     if (kind === 'video' && path !== current) {
       probe = null; loadedMediaKey = ''; lastVideoTime = 0;
@@ -347,6 +359,32 @@
     return JSON.stringify([project.video_path, project.blf_path, project.dbc_bindings || {}, project.track_signals || {}]);
   }
 
+  function acquireProbe(key) {
+    if (probe && loadedMediaKey === key) return Promise.resolve(probe);
+    if (probePromise && probePromiseKey === key) return probePromise;
+    const videoPath = project.video_path;
+    const blfPath = project.blf_path;
+    const bindings = JSON.parse(JSON.stringify(project.dbc_bindings || {}));
+    const trackSignals = JSON.parse(JSON.stringify(project.track_signals || {}));
+    probePromiseKey = key;
+    const request = API.studioProbe(videoPath, blfPath, bindings, trackSignals)
+      .then(result => {
+        // Cache the result even if Studio is currently unmounted.
+        if (probePromiseKey === key) {
+          probe = result;
+          loadedMediaKey = key;
+        }
+        return result;
+      })
+      .finally(() => {
+        if (probePromise === request) {
+          probePromise = null;
+          probePromiseKey = '';
+        }
+      });
+    probePromise = request;
+    return request;
+  }
   async function showVideo(expectedGen = mountGen) {
     if (!project.video_path || !video) return false;
     const port = await (API.studioPrepareVideo
@@ -372,18 +410,18 @@
     normalizeTrackConfigs();
     if (!project.video_path || !project.blf_path) return setStatus('请先选择视频和 BLF');
     const expectedGen = mountGen;
+    const requestedKey = mediaKey();
     await showVideo(expectedGen);
     if (expectedGen !== mountGen || !root?.isConnected) return;
-    setStatus('正在读取 BLF 波形…（视频可继续预览）');
+    setStatus('');
+    setProbeProgress({percent:0, frames:0, elapsed_s:0, message:'准备读取…'});
     const button = root.querySelector('#st-load');
     if (button) button.disabled = true;
     try {
-      const nextProbe = await API.studioProbe(
-        project.video_path, project.blf_path, project.dbc_bindings || {}, project.track_signals || {}
-      );
+      const nextProbe = await acquireProbe(requestedKey);
       if (expectedGen !== mountGen || !root?.isConnected) return;
       probe = nextProbe;
-      loadedMediaKey = mediaKey();
+      loadedMediaKey = requestedKey;
       project.channels = probe.channels || project.channels || [];
       project.signals = probe.signals || [];
       project.dbc_bindings = probe.dbc_bindings || project.dbc_bindings || {};
@@ -400,7 +438,7 @@
       resizeCanvas(); draw();
       await save();
     } catch (e) {
-      if (expectedGen === mountGen) setStatus('载入失败：' + e);
+      if (expectedGen === mountGen) { setProbeProgress({percent:0, failed:true, message:'轨迹读取失败'}); setStatus('载入失败：' + e); }
     } finally {
       if (expectedGen === mountGen && root?.isConnected) {
         const currentButton = root.querySelector('#st-load');
@@ -420,31 +458,87 @@
     canvas.width = Math.max(1, Math.round(r.width*dpr)); canvas.height=Math.max(1,Math.round(r.height*dpr));
     ctx = canvas.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
   }
+  function blfDuration() {
+    if (Number(probe?.blf?.duration) > 0) return Number(probe.blf.duration);
+    const points = Object.values(probe?.traces || {}).flat();
+    return points.reduce((max, p) => Math.max(max, Number(p?.[0]) || 0), 1) || 1;
+  }
+  function mappedBlfTime() {
+    return (Number(video?.currentTime) || 0) + (Number(project.global_offset_s) || 0);
+  }
+  function ensureTimelineView() {
+    const duration = blfDuration();
+    if (!timelineView.initialized || timelineView.duration !== duration) {
+      const videoDuration = Number(probe?.video?.duration) || 20;
+      const span = Math.min(duration, Math.max(videoDuration * 4, 60));
+      const center = Math.min(Math.max(mappedBlfTime(), span / 2), Math.max(span / 2, duration - span / 2));
+      timelineView = {start: Math.max(0, center - span / 2), end: Math.min(duration, center + span / 2), duration, initialized: true};
+    }
+    const span = Math.max(.001, timelineView.end - timelineView.start);
+    timelineView.start = Math.max(0, Math.min(timelineView.start, Math.max(0, duration - span)));
+    timelineView.end = Math.min(duration, timelineView.start + span);
+  }
+  function setTimelineView(start, end) {
+    const duration = blfDuration();
+    const span = Math.max(.05, Math.min(duration, end - start));
+    const safeStart = Math.max(0, Math.min(start, duration - span));
+    timelineView = {start: safeStart, end: safeStart + span, duration, initialized: true};
+    draw();
+  }
+  function timelineTimeAtX(x) {
+    ensureTimelineView();
+    const w = Math.max(1, canvas?.clientWidth || 1);
+    return timelineView.start + Math.max(0, Math.min(1, x / w)) * (timelineView.end - timelineView.start);
+  }
+  function timelineZoom(factor, focus) {
+    ensureTimelineView();
+    const duration = blfDuration();
+    const oldSpan = timelineView.end - timelineView.start;
+    const anchor = Number.isFinite(focus) ? focus : mappedBlfTime();
+    const ratio = oldSpan ? (anchor - timelineView.start) / oldSpan : .5;
+    const minSpan = Math.max(.2, Math.min(duration, (Number(probe?.video?.duration) || 20) / 20));
+    const span = Math.max(minSpan, Math.min(duration, oldSpan * factor));
+    setTimelineView(anchor - span * ratio, anchor + span * (1 - ratio));
+  }
+  function niceTimeStep(span) {
+    const raw = Math.max(.001, span / 6), power = Math.pow(10, Math.floor(Math.log10(raw)));
+    const normalized = raw / power;
+    return (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * power;
+  }
   function draw() {
     if (!ctx || !canvas) return;
-    const w=canvas.clientWidth,h=canvas.clientHeight;
-    ctx.clearRect(0,0,w,h); ctx.fillStyle='#0a0d15';ctx.fillRect(0,0,w,h);
+    ensureTimelineView();
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const axisH = 22, plotH = Math.max(1, h - axisH);
+    const start = timelineView.start, span = timelineView.end - timelineView.start;
+    const duration = blfDuration();
     const activeTracks = (project.track_configs || []).filter(t => t.signal);
-    const duration = probe?.video?.duration || 1, rowH=h/Math.max(1, activeTracks.length);
-    activeTracks.forEach((t,i)=>{
-      const y=i*rowH;
-      ctx.fillStyle=i%2?'#0e121c':'#101522';ctx.fillRect(0,y,w,rowH-1);
-      ctx.fillStyle=t.color || '#60a5fa';ctx.font='12px Segoe UI';ctx.fillText(t.label || '轨迹',10,y+17);
-      const pts=probe?.traces?.[t.key] || []; if(!pts.length)return;
-      let lo=Infinity,hi=-Infinity;pts.forEach(p=>{lo=Math.min(lo,p[1]);hi=Math.max(hi,p[1]);});
-      if(hi===lo){hi=lo+1}
-      ctx.strokeStyle=t.color;ctx.lineWidth=t.key===activeTrack?2:1;ctx.beginPath();
-      let started=false;
-      pts.forEach(p=>{
-        const vt=p[0]-project.global_offset_s-trackOffset(t.key);
-        const x=vt/duration*w, yy=y+rowH-8-(p[1]-lo)/(hi-lo)*(rowH-28);
-        if(x<0||x>w)return;
-        if(!started){ctx.moveTo(x,yy);started=true}else ctx.lineTo(x,yy);
-      });ctx.stroke();
+    const rowH = plotH / Math.max(1, activeTracks.length);
+    ctx.clearRect(0, 0, w, h); ctx.fillStyle = '#0a0d15'; ctx.fillRect(0, 0, w, h);
+    const xFor = t => (t - start) / span * w;
+    activeTracks.forEach((t, i) => {
+      const y = i * rowH;
+      ctx.fillStyle = i % 2 ? '#0e121c' : '#101522'; ctx.fillRect(0, y, w, Math.max(1, rowH - 1));
+      ctx.fillStyle = t.color || '#60a5fa'; ctx.font = '12px Segoe UI'; ctx.fillText(t.label || '轨迹', 10, y + 17);
+      const pts = probe?.traces?.[t.key] || []; if (!pts.length) return;
+      let lo = Infinity, hi = -Infinity; pts.forEach(p => { lo = Math.min(lo, p[1]); hi = Math.max(hi, p[1]); });
+      if (hi === lo) hi = lo + 1;
+      ctx.save(); ctx.beginPath(); ctx.rect(0, y, w, Math.max(1, rowH - 1)); ctx.clip();
+      ctx.strokeStyle = t.color || '#60a5fa'; ctx.lineWidth = 1.5; ctx.beginPath();
+      pts.forEach((p, index) => { const x = xFor(p[0]), yy = y + rowH - 8 - (p[1] - lo) / (hi - lo) * Math.max(10, rowH - 28); if (index === 0) ctx.moveTo(x, yy); else ctx.lineTo(x, yy); });
+      ctx.stroke();
+      (project.timeline_keyframes || []).filter(k => k.track === t.key).forEach(k => {
+        const x = xFor(Number(k.blf_s)); if (x < -8 || x > w + 8) return;
+        const ky = y + 12, selected = k === selectedTimelineKeyframe; ctx.fillStyle = '#ffd166'; ctx.beginPath(); ctx.moveTo(x, ky - (selected ? 8 : 6)); ctx.lineTo(x + (selected ? 8 : 6), ky); ctx.lineTo(x, ky + (selected ? 8 : 6)); ctx.lineTo(x - (selected ? 8 : 6), ky); ctx.closePath(); ctx.fill(); if (selected) { ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke(); }
+      });
+      ctx.restore();
     });
-    const x=(video?.currentTime||0)/duration*w;
-    ctx.strokeStyle='#fff';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();
-    ctx.fillStyle='#fff';ctx.beginPath();ctx.moveTo(x-5,0);ctx.lineTo(x+5,0);ctx.lineTo(x,7);ctx.fill();
+    const currentX = xFor(mappedBlfTime());
+    if (currentX >= 0 && currentX <= w) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(currentX, 0); ctx.lineTo(currentX, plotH); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(currentX - 5, 0); ctx.lineTo(currentX + 5, 0); ctx.lineTo(currentX, 7); ctx.fill(); }
+    const step = niceTimeStep(span); ctx.strokeStyle = 'rgba(150,170,200,.22)'; ctx.fillStyle = '#8fa4bf'; ctx.font = '10px Segoe UI';
+    for (let tick = Math.ceil(start / step) * step; tick <= timelineView.end + step / 2; tick += step) { const x = xFor(tick); if (x < 0 || x > w) continue; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, plotH); ctx.stroke(); ctx.fillText(fmt(tick), x + 3, h - 6); }
+    const range = root?.querySelector('#st-timeline-range'); if (range) range.textContent = `${fmt(start)} – ${fmt(timelineView.end)} / ${fmt(duration)}`;
+    const alignButton = root?.querySelector('#st-align-keyframe'); if (alignButton) alignButton.disabled = !selectedTimelineKeyframe;
   }
   function tick() {
     if(video){
@@ -469,12 +563,71 @@
     Router.navigate('editor');
   }
 
+  function timelineTrackAtY(y) {
+    const activeTracks = (project.track_configs || []).filter(t => t.signal);
+    const rowH = Math.max(1, (canvas.clientHeight - 22) / Math.max(1, activeTracks.length));
+    return activeTracks[Math.max(0, Math.min(activeTracks.length - 1, Math.floor(y / rowH)))];
+  }
+  function timelineKeyframeAt(x, y) {
+    const track = timelineTrackAtY(y); if (!track) return null;
+    ensureTimelineView(); const sx = canvas.clientWidth / Math.max(.001, timelineView.end - timelineView.start);
+    return (project.timeline_keyframes || []).find(k => k.track === track.key && Math.abs((Number(k.blf_s) - timelineTimeAtX(x)) * sx) <= 9) || null;
+  }
+  function seekTimeline(e) {
+    if (!probe || !video) return;
+    const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    const keyframe = timelineKeyframeAt(x, y);
+    if (keyframe) {
+      selectedTimelineKeyframe = keyframe;
+      setStatus(`已选择 ${fmt(Number(keyframe.blf_s))} 的关键帧，点击“对齐关键帧”即可与当前视频位置重合`);
+      draw(); return;
+    }
+    const blfTime = timelineTimeAtX(x), videoTime = blfTime - Number(project.global_offset_s || 0);
+    video.currentTime = Math.max(0, Math.min(video.duration || probe.video.duration || 0, videoTime));
+    draw();
+  }
+  async function addTimelineKeyframe(e) {
+    if (!probe || !canvas) return;
+    const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    const track = timelineTrackAtY(y); if (!track) return;
+    const blfTime = timelineTimeAtX(x), videoTime = Math.max(0, Number(video?.currentTime) || 0);
+    project.timeline_keyframes = Array.isArray(project.timeline_keyframes) ? project.timeline_keyframes : [];
+    const keyframe = {id: `key-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, track: track.key, label: track.label || '轨迹', blf_s: Number(blfTime.toFixed(3)), video_s: Number(videoTime.toFixed(3))};
+    project.timeline_keyframes.push(keyframe); selectedTimelineKeyframe = keyframe;
+    await save(); setStatus(`已在 ${fmt(blfTime)} 为“${track.label || '轨迹'}”添加关键帧`); draw();
+  }
+  async function removeTimelineKeyframe(e) {
+    if (!canvas) return false;
+    const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    const keyframe = timelineKeyframeAt(x, y);
+    if (!keyframe) return false;
+    project.timeline_keyframes = (project.timeline_keyframes || []).filter(k => k !== keyframe);
+    if (selectedTimelineKeyframe === keyframe) selectedTimelineKeyframe = null;
+    await save(); setStatus(`已删除 ${fmt(Number(keyframe.blf_s))} 的关键帧`); draw();
+    return true;
+  }
+  async function alignSelectedTimelineKeyframe() {
+    if (!selectedTimelineKeyframe || !video) return setStatus('请先单击一个黄色关键帧');
+    const videoTime = Number(video.currentTime) || 0, blfTime = Number(selectedTimelineKeyframe.blf_s) || 0;
+    const offset = blfTime - videoTime;
+    project.global_offset_s = Number(offset.toFixed(3));
+    const input = root?.querySelector('#st-global'); if (input) input.value = project.global_offset_s.toFixed(3);
+    await API.saveStudioProject(project);
+    setStatus(`对齐完成：视频 ${fmt(videoTime)} ↔ BLF ${fmt(blfTime)}，全局偏移 ${project.global_offset_s.toFixed(3)} 秒`);
+    draw();
+  }
+  async function toggleTimelineKeyframe(e) {
+    const removed = await removeTimelineKeyframe(e);
+    if (!removed) await addTimelineKeyframe(e);
+  }
   function wire() {
     video=root.querySelector('#st-video');canvas=root.querySelector('#st-timeline');ctx=canvas.getContext('2d');
     root.querySelector('#st-pick-video').onclick=()=>pick('video');
     root.querySelector('#st-pick-blf').onclick=()=>pick('blf');
     root.querySelector('#st-config-dbc').onclick=async()=>{await save();Router.navigate('dbc');};
-    root.querySelector('#st-toggle-tracks').onclick=()=>{const body=root.querySelector('#st-track-manager-body');const open=body.style.display !== 'none';body.style.display=open?'none':'';root.querySelector('#st-toggle-tracks').textContent=open?'展开选择 Signal':'收起 Signal 选择';};
+    root.querySelector('#st-open-signals').onclick=async()=>{await save();Router.navigate('signals');};
+    root.querySelector('#st-align-keyframe').onclick=alignSelectedTimelineKeyframe;
+
     root.querySelector('#st-load').onclick=load;
     root.querySelector('#st-save').onclick=save;
     root.querySelector('#st-overlay').onclick=enterOverlay;
@@ -490,7 +643,19 @@
       activeTrack=b.dataset.track;root.querySelectorAll('[data-track]').forEach(x=>x.classList.toggle('active',x===b));draw();
     });
     root.querySelectorAll('[data-gauge]').forEach(b=>b.onclick=enterOverlay);
-    canvas.onclick=e=>{if(!probe)return;const r=canvas.getBoundingClientRect();video.currentTime=(e.clientX-r.left)/r.width*probe.video.duration;};
+    root.querySelectorAll('[data-timeline-zoom]').forEach(button => button.onclick = () => {
+      const mode = button.dataset.timelineZoom;
+      if (mode === 'reset') { setTimelineView(0, blfDuration()); return; }
+      timelineZoom(mode === 'in' ? .5 : 2);
+    });
+    canvas.onclick = e => { if (timelineSuppressClick) { timelineSuppressClick = false; return; } clearTimeout(timelineClickTimer); timelineClickTimer = setTimeout(() => seekTimeline(e), 180); };
+    canvas.ondblclick = e => { clearTimeout(timelineClickTimer); timelineClickTimer = null; toggleTimelineKeyframe(e); };
+    canvas.oncontextmenu = e => { e.preventDefault(); removeTimelineKeyframe(e); };
+    canvas.onwheel = e => { e.preventDefault(); const r = canvas.getBoundingClientRect(); const focus = timelineTimeAtX(e.clientX - r.left); timelineZoom(e.deltaY < 0 ? .75 : 1.333333, focus); };
+    canvas.onpointerdown = e => { if (e.button !== 0) return; timelineDrag = {x: e.clientX, start: timelineView.start, end: timelineView.end}; canvas.setPointerCapture?.(e.pointerId); };
+    canvas.onpointermove = e => { if (!timelineDrag) return; const dx = e.clientX - timelineDrag.x; if (Math.abs(dx) > 3) timelineSuppressClick = true; const span = timelineDrag.end - timelineDrag.start, shift = dx / Math.max(1, canvas.clientWidth) * span; setTimelineView(timelineDrag.start - shift, timelineDrag.end - shift); };
+    canvas.onpointerup = e => { timelineDrag = null; canvas.releasePointerCapture?.(e.pointerId); };
+    canvas.onpointercancel = () => { timelineDrag = null; };
     root.querySelector('#st-pick-output').onclick=async()=>{
       const folder=await API.openFolderDialog(project.output_path).catch(()=>null);if(!folder)return;
       project.output_path=folder.replace(/[\\/]$/,'')+'\\openlap_studio_export.mp4';
@@ -503,6 +668,8 @@
       exporting=true;root.querySelector('#st-export').textContent='取消导出';setExportProgress(0,'starting','正在启动导出…');
       const r=await API.startStudioExport(project);if(!r?.ok){exporting=false;setStatus(r?.error||'启动失败')}
     };
+    // Frames/time/ETA live in the progress card; do not duplicate them below.
+    unlisten.push(API.on('studio-probe-progress', e => setProbeProgress(e)));
     unlisten.push(API.on('studio-export-progress',e=>{
       setExportProgress(e.percent,e.stage,e.message||'');
     }));
@@ -525,6 +692,9 @@
     if (myGen !== mountGen || !root?.isConnected) return;
     project={...project,...(saved||{})};
     project.track_signals = project.track_signals || {};
+    project.timeline_keyframes = Array.isArray(project.timeline_keyframes) ? project.timeline_keyframes : [];
+    timelineView.initialized = false;
+    selectedTimelineKeyframe = null;
     normalizeTrackConfigs();
     project.dbc_bindings = Object.fromEntries(Object.entries(project.dbc_bindings || {}).map(([ch, value]) =>
       [ch, Array.isArray(value) ? value.filter(Boolean) : (value ? [value] : [])]

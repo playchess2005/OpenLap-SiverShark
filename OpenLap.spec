@@ -58,6 +58,14 @@ def _find_bin(name):
     found = shutil.which(name)
     if found:
         return found
+    if name == 'ffmpeg':
+        try:
+            import imageio_ffmpeg
+            packaged = imageio_ffmpeg.get_ffmpeg_exe()
+            if packaged and Path(packaged).is_file():
+                return str(packaged)
+        except Exception:
+            pass
     return None
 
 FFMPEG_BIN  = _find_bin('ffmpeg')
@@ -125,6 +133,8 @@ hidden_imports = [
     'generate_openlap_video',
     'can',
     'cantools',
+    'telemetrik',
+    'telemetrik.parser',
     # Data loaders
     'racebox_data',
     'aim_data',
