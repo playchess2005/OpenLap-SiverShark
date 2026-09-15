@@ -1,308 +1,188 @@
-# OpenLap — Free Motorsport Telemetry Overlay Software
-
-中文文档：[README.zh-CN.md](README.zh-CN.md)
-
-**OpenLap** is a free, open-source desktop application that overlays telemetry data on racing video footage. It supports **RaceBox**, **AIM MyChron**, **MoTeC**, **GPX**, **VBOX**, and **Unipro Laptimer** data sources and runs entirely on your PC — no subscription, no cloud, no fees.
-
-Point it at your telemetry files and a folder of race videos, and it matches sessions, syncs timing, and renders professional gauge overlays — all from a single window.
-
-> Licensed under the **GNU General Public License v3**. Free forever. Forks must stay open source.
-
----
-
-## Quick Start (Windows — no technical knowledge needed)
-
-No Python, no FFmpeg, no installation hassle. Everything is bundled.
-
-**1. Download**
-
-Go to **[Releases](https://github.com/LaurensVR3/OpenLap/releases/latest)** and download `OpenLap-Setup-<version>.exe`.
-
-**2. Run the installer**
-
-Double-click it and follow the wizard. No admin rights required — it installs for your user account only.
-
-> **Windows SmartScreen warning?** Windows shows this for all software that isn't commercially signed. OpenLap is open source and safe. Click **More info**, then **Run anyway**.
-
-**3. Launch**
-
-OpenLap starts automatically at the end of the wizard, and you'll find it afterwards in the Start Menu (and on your Desktop if you checked that option).
-
-> Prefer a portable, no-install copy instead? A `.zip` is also attached to each release. If you use that, extract it fully before running `OpenLap.exe` — don't run it from inside the zip — and if Windows shows a `pythonnet`/`Python.Runtime.dll` error on first launch, right-click the extracted folder → **Properties** → check **Unblock**, or run `Get-ChildItem -Recurse | Unblock-File` on it in PowerShell. This is a Windows security tag applied to downloaded/extracted files, not a bug in your files — the installer avoids it entirely, which is why it's the recommended option.
-
-**4. Set up your folders (Settings tab)**
-
-When the app opens, go to the **Settings tab first** and tell it where your files live:
-
-- **RaceBox folder** — the folder where your RaceBox `.csv` files are stored
-- **AIM folder** — the folder containing your AIM `.xrk` / `.xrz` / `.drk` files
-- **MoTeC folder** — the folder containing your MoTeC `.ld` files
-- **GPX folder** — the folder containing your `.gpx` files
-- **VBOX folder** — the folder containing your Racelogic `.vbo` files
-- **Unipro folder** — the folder containing your Unipro `.tsv` (preferred) or `.uni` files
-- **Video folder** — the folder where your race videos are stored
-- **Export folder** — where finished videos will be saved
-
-You only need to fill in the sources you actually use.
-
-**First-time setup for AIM users:** click **Download DLL** in the AIM section. This fetches the conversion library that reads `.xrk` files. You only need to do this once.
-
-**First-time setup for RaceBox cloud users:** click **Download Login Component**, wait for it to finish, then click **Check Auth** and log in with your RaceBox account.
-
-**5. Scan your sessions (Data tab)**
-
-Go to the **Data tab**. Sessions are scanned automatically on startup — they will appear grouped by date. If nothing shows up, click **Scan**.
-
-Each session shows its laps and whether a matching video was found:
-- `✓ user` — sync confirmed, ready to export
-- `~ auto` — sync detected automatically (blue); scrub to verify, click **Confirm** to lock it in
-- `≈ unset` — no sync offset set yet; use the Align Video panel to set it manually
-- `no vid` — no matching video found; click **Browse for video…** to link one manually
-
-**6. Set the sync offset**
-
-The sync offset tells OpenLap exactly where in the video the lap timer starts. Without it, gauges will be out of step with the footage.
-
-- **Auto-sync (recommended):** enable **Auto Sync** in Settings. After scanning, OpenLap cross-correlates video motion against G-force to detect the offset automatically. Works best with RaceBox, AIM, and MoTeC data. GPX files do not contain G-force, so auto-sync will not run for GPX sessions.
-- **Manual sync:** in the Data tab, select a session and use the **Align Video** panel. Scrub the video to the exact moment the lap timer starts, then click **Mark**.
-
-**7. Edit the overlay (Overlay tab)**
-
-Click **Open in Overlay →** on any session to jump to the editor.
-
-- Use the lap selector (◀ ▶ or dropdown) to switch between laps
-- Click **Add Gauge** to place a new element, then pick a **Gauge Type** (Dial, Bar, Numeric, Line, Multi-Line, Session Info, Circuit Map, etc.). For single-value types, a **Data Channel** dropdown appears below it — pick from the fixed channel set plus anything your telemetry file actually captured (e.g. ECU coolant temp, throttle position, gear paddle) and, if you've attached a secondary file, its channels too
-- Drag gauges to reposition; drag the corner handle to resize
-- Switch themes (Dark · Light · Colorful · Monochrome) using the theme picker
-- Save your layout as a named preset so you can reuse it
-
-**8. Export (Export tab)**
-
-Click **+ Export** on the lap or session you want, then go to the **Export tab**.
-
-- Choose scope: **This Lap**, **Fastest Lap**, **All Laps**, or **Full Session**
-- Choose encoder: OpenLap auto-detects your GPU (NVIDIA NVENC · AMD AMF · Intel QSV). If no GPU is found it falls back to CPU (libx264) — this is slower but always works
-- Click **Start Export**. Progress and a log are shown live. Finished videos are saved to your Export Folder.
-
----
-
-## Preview
-
-**Sample output video** — Karting Haute Picardie Arvillers:
-
-[![OpenLap telemetry overlay on karting video — speed, RPM, G-force, circuit map gauges](https://img.youtube.com/vi/gsKdIWs6FvM/maxresdefault.jpg)](https://youtu.be/gsKdIWs6FvM)
-
-### Screenshots
-
-| Data tab | Overlay tab | Export tab | Settings tab |
-|---|---|---|---|
-| ![Data tab — session list with lap times and sync status](docs/screenshot_data.png) | ![Overlay tab — live video preview with gauge editor](docs/screenshot_overlay.png) | ![Export tab — encoder selection and progress log](docs/screenshot_export.png) | ![Settings tab — telemetry and video folder configuration](docs/screenshot_settings.png) |
-
----
-
-## Troubleshooting
-
-**Sessions are not appearing in the Data tab**
-- Check that the correct folder is set in Settings for your data source
-- Make sure the files are the right type (`.csv` for RaceBox, `.xrk`/`.xrz`/`.drk` for AIM, `.ld` for MoTeC, `.gpx` for GPX, `.vbo` for VBOX, `.tsv`/`.uni` for Unipro)
-- Click **Scan** to force a rescan
-- AIM files also need the DLL downloaded (Settings → Download DLL)
-
-**No video matched to a session**
-- OpenLap matches by timestamp. Make sure your camera clock is roughly correct
-- Use **Browse for video…** in the Data tab to link a video manually
-- Supported video formats: anything FFmpeg can read (MP4, MOV, MTS, AVI, etc.)
-
-**Auto-sync did nothing / sync is wrong**
-- Auto-sync requires G-force data. GPX sessions do not have G-force — use manual sync instead
-- If confidence was too low the result is discarded. Use manual sync via the Align Video panel
-- A manually set offset (`✓ user`) is never overwritten by auto-sync
-
-**Secondary telemetry Auto-sync found no confident match**
-- This tries RPM, G-force, Speed, and Altitude in turn and keeps whichever matches best — if neither file has usable data for any of those (e.g. a very short test capture, or one file barely overlapping the other in time), there's nothing to correlate against. Set the offset manually instead
-- A prior failed attempt no longer blocks retrying — click **Auto-sync** again any time after fixing the underlying issue (e.g. re-exporting the file)
-
-**Export failed or produced no output**
-- Check the log in the Export tab for the specific error
-- Make sure the Export Folder is set in Settings and the folder actually exists
-- Try switching to the CPU encoder (libx264) if a GPU encoder fails
-
-**App crashes on launch**
-- Make sure `OpenLap.exe` and the `_internal` folder are in the same directory — never move the `.exe` on its own
-
----
-
-## Features
-
-### Data & Session Management
-- Per-source telemetry folders — configure separate directories for RaceBox, AIM, MoTeC, GPX, VBOX, and Unipro data
-- Auto-scan on startup with persistent session cache for fast restarts
-- Sessions grouped by date with lap list, best time, and video match status
-- Manual video reassignment for sessions where auto-matching doesn't find the right clip
-- Multi-clip support — multiple video segments per session are joined automatically before rendering
-- **Auto-sync** (opt-in): cross-correlates video motion against G-force to detect the sync offset automatically after each scan — results appear as `~ auto` and can be confirmed or fine-tuned in the Data tab
-- Frame-accurate manual sync: scrub the video preview to where the lap timer starts, press **Mark** — saves as a `✓ user` offset that auto-sync will never overwrite
-- RaceBox cloud download directly from the app (requires a RaceBox account)
-- AIM `.xrk` / `.xrz` / `.drk` files are converted to CSV on first scan using the AIM MatLabXRK DLL
-
-### Multi-File Sessions (Secondary Telemetry)
-- Attach a second telemetry file to a session (e.g. a MoTeC ECU log alongside an AIM GPS log) to combine both into one overlay
-- The Data tab lists every channel each file actually has, side by side — no manual "which file wins" configuration needed
-- Every channel from both files is selectable as a gauge's Data Channel; if both files have a channel with the same name, both stay available, labeled by file (e.g. `Speed` and `Speed (MoTeC Data.ld)`)
-- **Auto-sync** between the two files tries RPM, G-force, Speed, and Altitude in turn and keeps whichever channel gives the highest-confidence match — works even when the files don't share an RPM channel
-
-### Overlay Editor
-- Live video preview with scrub bar — see exactly how gauges look on your footage before exporting
-- Freely positionable, resizable gauge elements — drag to move, drag corner handle to resize
-- Element-to-element snapping with cyan alignment guides; size snaps to 5% grid
-- Lap selector — switch between laps while the video preview stays in sync
-- **4 overlay themes**: Dark · Light · Colorful · Monochrome
-- **Gauge types**: Numeric · Bar · Dial · Line · Delta · Compare · Lean · G-Meter · Splits · Sector Bar · Multi-Line · Circuit Map · Zoomed Map · Scoreboard · Info · Image/Logo — most types take any data channel, not just the fixed set (see below)
-- Bike mode — enables Lean gauge and reads lean angle from compatible devices
-- Reference lap overlay — compare any lap against a reference with live delta time
-- Named preset layouts — save, load, and switch overlay configurations
-
-### Export
-- **Scope**: This Lap, Fastest Lap, All Laps (one file per lap), or Full Session
-- GPU-accelerated encoding with auto-detection: NVENC (NVIDIA) · AMF (AMD) · QSV (Intel) · libx264 (CPU fallback)
-- Adjustable quality (CRF) and parallel worker count
-- Configurable pre/post lap padding
-- Progress bar and log output per render job
-
-### Extensibility
-- Plugin-based style system — drop a `.py` file into `styles/` and it appears in the UI automatically
-- All styles receive theme colour tokens; custom styles support all four themes with no extra work
-
----
-
-## Supported Data Sources
-
-| Source | Devices / File types | Notes |
-|---|---|---|
-| **RaceBox** | RaceBox Mini, Mini S, Pro, Bike (`.csv`) | Car and bike mode; cloud download built-in |
-| **AIM MyChron** | MyChron 5, MyChron 5S, Solo 2 (`.xrk` · `.xrz` · `.drk`) | Auto-converted to CSV on scan |
-| **MoTeC** | Any MoTeC logger exporting `.ld` | Binary i2 format; full session lap timing |
-| **GPX** | Any GPS device or phone app (`.gpx`) | Speed derived from position + timestamp; no G-force, auto-sync not available |
-| **VBOX** | Racelogic VBOX loggers (`.vbo`) | Full channel + lap-trigger support |
-| **Unipro Laptimer** | Unipro GPS laptimer (`.tsv`, `.uni`) | See below — prefer `.tsv` when available |
-
-**A note on Unipro support:** Unipro publishes no file format spec, so this was built by reverse-engineering. Two formats are supported, and they are **not equivalent**:
-
-- **`.tsv` (recommended)** — export it from Unipro Analyser's own "Export to TSV" function. This is a full, documented parse: every channel (RPM, gear, exhaust temp, real accelerometer-measured G-force, and the device's own true lap numbering) comes through directly and accurately. Use this whenever you can.
-- **`.uni` (the raw binary the device itself writes)** — supported directly so you don't strictly need Analyser installed, but only GPS position, altitude, and speed could be reverse-engineered from it. RPM, gear, gyro, and exhaust temp are unavailable and read as zero. Longitudinal/lateral G and lap boundaries are *estimated* from the GPS track (a beacon-crossing heuristic) rather than read from the device — cross-checked against a `.tsv` export of the same session, this heuristic under-counted by one lap. If you only have a raw `.uni` file and need complete or lap-accurate data, export a `.tsv` from Analyser and use that instead.
-
-### Telemetry channels
-
-The fixed set, always available regardless of data source:
-
-| Channel | Label | Unit |
-|---|---|---|
-| `speed` | Speed | km/h |
-| `rpm` | RPM | rpm |
-| `exhaust_temp` | Exhaust Temp | °C |
-| `gforce_lon` | Long G | G |
-| `gforce_lat` | Lat G | G |
-| `lean` | Lean Angle | ° |
-| `altitude` | Altitude | m |
-| `lap_time` | Lap Time | s |
-| `delta_time` | Delta | s |
-| `gear` | Gear | — |
-
-Beyond this fixed set, OpenLap also discovers whatever else your file actually logged — MoTeC and AIM files in particular often carry dozens of extra CAN/ECU channels (coolant temp, throttle position, brake pressure, fuel pressure, and more). These show up automatically in the Overlay editor's Data Channel picker under "Session Channels," with a "Show all" toggle to reveal noisier diagnostic/state channels that are hidden by default.
-
----
-
-## Why OpenLap?
-
-Most telemetry overlay tools are expensive, subscription-based, or locked to a single data source. OpenLap is:
-
-- **Free** — no licence fees, no watermarks, no export limits
-- **Open source** — GPL v3; inspect, modify, and contribute
-- **Multi-source** — RaceBox, AIM MyChron, MoTeC, GPX, VBOX, and Unipro Laptimer in one app
-- **GPU-accelerated** — NVIDIA NVENC, AMD AMF, Intel QSV; renders fast on any modern PC
-- **Offline** — no internet required after initial setup; your data stays on your machine
-
-Common use cases: karting, circuit racing, track days, hillclimb, motorcycle track riding, autocross etc
-
----
-
-## Credits
-
-Thanks to community contributors who've helped extend OpenLap beyond Windows:
-
-- **[caezium](https://github.com/caezium)** — macOS + Linux cross-platform support, including AIM `.xrk` reading via `libxrk` for non-Windows platforms
-- **[jorlandobr](https://github.com/jorlandobr)** — Linux compatibility fixes (Pop!_OS icon loading, local storage, DevTools behavior) and RaceBox RPM channel support
-
----
-
-## Support the project
-
-OpenLap is free and always will be. If you want to see more/faster progress, please consider sponsoring.
-
-[![GitHub Sponsors](https://img.shields.io/github/sponsors/LaurensVR3?label=Sponsor&logo=github&color=ea4aaa)](https://github.com/sponsors/LaurensVR3)
-
----
-
-## Run from source
-
-Works on Windows, macOS, and Linux.
-
-**Requirements**
-
-- Python 3.10+
-- FFmpeg available on your system `PATH` (`brew install ffmpeg` on macOS)
-
-**Install Python dependencies**
-
-```bash
-pip install -e .
+# OpenLap Studio
+
+OpenLap is a free, open-source motorsport video and telemetry tool. This
+repository is the **playchess2005** edition of OpenLap, focused on a practical
+workflow for combining a race video with Vector BLF/CAN data and turning the
+decoded signals into an overlay.
+
+The current release is **v0.4.0**. Its main workflow is the Studio workspace:
+
+```text
+MP4/video + Vector BLF
+        ↓
+BLF channel scan → DBC binding → Signal selection
+        ↓
+manual video/BLF alignment with keyframes
+        ↓
+overlay cards and gauges → rendered video
 ```
 
-On macOS the Cocoa backend is already pulled in via PyObjC when pywebview is installed, so no extra step is needed. If you see errors about `AppKit` or `WebKit`, make sure pywebview itself was installed successfully.
+OpenLap runs locally. Your video, BLF files and DBC files are not uploaded to
+a server. It is licensed under the GNU GPL v3 (or later).
 
-For RaceBox cloud download (optional):
+## What makes this version different
+
+The README in this repository describes this codebase, not the original
+upstream project. The features below are the reason to use this edition:
+
+- **BLF + video alignment** — load a video and a Vector `.blf` file in Studio,
+  inspect the same run on one timeline, and set the relationship between video
+  time and BLF time precisely.
+- **DBC-aware decoding** — bind one or more `.dbc` databases to each BLF
+  channel. The binding is explicit, saved with the project, and used to decode
+  CAN frames into named physical signals.
+- **Signal-first workflow** — after decoding, search and select individual
+  `Message.Signal` items by channel, CAN ID, message name, signal name, unit or
+  DBC file. Only the selected tracks need to be read for the Studio timeline.
+- **Keyframe alignment** — place keyframes on recognizable events, select a
+  keyframe, and align it to the current video position. Keyframes can be
+  added, selected, removed and reviewed while zooming or panning the timeline.
+- **Track-specific correction** — use a global BLF offset and optional
+  per-track offsets for signals that need a small independent correction (for
+  example steering or yaw rate).
+- **Reusable overlays** — continue from Studio to the Overlay editor, add
+  cards such as steering, pedals, four-wheel torque and yaw-rate views, and
+  combine them with the normal numeric, dial, bar, line, map and session
+  widgets.
+
+## Studio workflow
+
+### 1. Choose the material
+
+Open **Studio**, choose the race video and the Vector BLF log, then select
+**Load material**. BLF channel scanning reports progress, frame counts and an
+ETA. Results are cached so returning to the same file does not require an
+unnecessary full scan.
+
+### 2. Bind DBC files to BLF channels
+
+Open **DBC configuration** and scan the BLF. For every discovered channel you
+can add one or more DBC files. The order is significant when more than one DBC
+can decode the same CAN ID: OpenLap tries the bindings in list order and reports
+conflicts instead of silently hiding them.
+
+This keeps the CAN database decision visible and reproducible. A DBC is not
+the log itself; it describes how message bytes become signals (start bit,
+length, byte order, scale, offset, unit and value choices).
+
+### 3. Select signals
+
+Use **Signal** selection to scan the DBC-bound BLF and create a catalog of
+available signals. Search fields include:
+
+- BLF channel and CAN ID (decimal or hexadecimal)
+- message and signal names
+- DBC filename and source
+- signal unit
+
+Select any number of signals and give the resulting tracks meaningful display
+names in Studio. The project stores the selected signal identity, not a fragile
+position in the list, so changing the order does not silently change a track.
+
+### 4. Align BLF data with the video
+
+Studio shows the video preview and a multi-track BLF timeline together.
+
+- Set the **global BLF offset** to establish the video-to-BLF relationship.
+- Use the scrub bar or click the waveform to move the video to an event.
+- Double-click the timeline to add a keyframe; select a keyframe and use
+  **Align keyframe** to make that BLF event coincide with the current video
+  frame.
+- Right-click or use the keyframe controls to remove an incorrect marker.
+- Zoom into a short event for fine alignment, or reset to the global view to
+  check drift across the whole recording.
+- Apply an independent steering or yaw offset when a particular signal needs a
+  small correction after the global alignment is correct.
+
+Positive track offsets mean that the signal is shown earlier in the video. All
+offsets are saved in the Studio project and are used again during export.
+
+### 5. Build and export the overlay
+
+Choose **Next: edit Overlay** after alignment. Studio keeps the loaded
+trajectory available while the Overlay editor is open, so switching pages does
+not start a second BLF read. Add and resize cards, map them to the selected
+signals, preview the result, then export the chosen interval to a video file.
+
+The export panel shows progress, logs and the final output validation. A video
+without GoPro/GPMF telemetry can still be aligned manually against BLF; video
+metadata is optional for this workflow.
+
+## Other telemetry sources
+
+The classic **Data** page remains available for sessions from:
+
+| Source | Common files |
+| --- | --- |
+| RaceBox | `.csv` |
+| AIM MyChron | `.xrk`, `.xrz`, `.drk` |
+| MoTeC | `.ld` |
+| GPX | `.gpx` |
+| VBOX | `.vbo` |
+| Unipro Laptimer | `.tsv`, `.uni` |
+
+These sources use the existing session/lap workflow. Studio is the dedicated
+BLF/DBC workflow; it does not require converting a BLF into a generic CSV
+before alignment.
+
+## Install and run from source
+
+Python 3.10 or newer is required. The dependency set includes the BLF and DBC
+stack (`python-can` and `cantools`), scientific processing libraries, the
+pywebview desktop shell, and a bundled FFmpeg binary for source installs.
+
+```bash
+git clone https://github.com/playchess2005/OpenLap-SiverShark.git
+cd OpenLap-SiverShark
+python -m venv .venv
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+# macOS/Linux: source .venv/bin/activate
+
+python -m pip install --upgrade pip
+pip install -e .
+python main.py
+```
+
+For the optional RaceBox cloud downloader, install the extra and its browser
+once:
 
 ```bash
 pip install -e ".[racebox-download]"
 playwright install chromium
 ```
 
-**Run**
+On Windows, download the packaged installer or portable build from this
+repository's [Releases](https://github.com/playchess2005/OpenLap-SiverShark/releases)
+page when a release is available. The packaged build includes the runtime and
+does not require a separate Python installation.
+
+## Development
+
+Python tests use `pytest`; frontend tests use Vitest:
 
 ```bash
-python main.py
+pytest
+npm install
+npm run test:run
 ```
 
-Configuration is stored at `~/.openlap/config.json`.
+The main source areas are:
 
-**Known macOS / Linux limitations**
+- `frontend/js/pages/studio.js` — material loading, timeline and alignment UI
+- `frontend/js/pages/dbc.js` — BLF channel discovery and DBC bindings
+- `frontend/js/pages/signals.js` — decoded Signal catalog and track selection
+- `webview_api.py` — BLF/DBC scanning, trajectory caching and export bridge
+- `generate_openlap_video.py` — Studio video rendering
 
-- AIM `.xrk` / `.xrz` / `.drk` conversion uses **libxrk** (installed automatically via `pip install -e .`). The AIM MatLabXRK DLL is a Windows binary and will not run on macOS or Linux — libxrk is the only supported reader on these platforms.
-- Hardware-accelerated encoding uses **VideoToolbox** (`h264_videotoolbox`) on macOS. NVENC / AMF / QSV are Windows/Linux only.
+## Project ownership
 
----
-
-## Building from source (Windows)
-
-```bash
-pip install pyinstaller
-pyinstaller OpenLap.spec --clean -y
-```
-
-The executable and all dependencies are output to `dist/OpenLap/`.
-
-To also build the installer (requires [Inno Setup](https://jrsoftware.org/isinfo.php)):
-
-```bash
-iscc /DMyAppVersion=0.2.0 installer\OpenLap.iss
-```
-
-The installer is output to `installer/Output/OpenLap-Setup-0.2.0.exe`.
-
----
+This repository is maintained and published by **playchess2005**. Please use
+the `playchess2005` GitHub account for releases, repository settings and new
+commits. Contributions and bug reports are welcome through the repository's
+issue tracker.
 
 ## License
 
-GNU General Public License v3 — see [LICENSE](LICENSE) for details.
-
-
+OpenLap is distributed under the [GNU General Public License v3.0 or later](LICENSE).
